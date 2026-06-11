@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: alphaforge-backend
+    runtime: docker
+    rootDir: backend
+    plan: starter
+    envVars:
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: KOINBX_BASE_URL
+        value: https://api.koinbx.com
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
