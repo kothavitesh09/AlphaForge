@@ -2,7 +2,7 @@ from app.repositories.base import MongoRepository
 
 
 DEFAULT_SETTINGS = {
-    "exchange_selection": "KoinBX",
+    "exchange_selection": "CoinDCX",
     "refresh_interval": 30,
     "risk_profile": "Balanced",
     "theme": "Dark",

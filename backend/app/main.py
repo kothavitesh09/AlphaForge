@@ -42,6 +42,9 @@ async def health_status():
         "mongodb": "connected",
         "collector_running": is_market_collector_running(),
         "active_symbols": len(get_settings().collector_symbols),
+        "active_provider": collector["active_provider"],
+        "latest_candle_timestamp": collector["latest_candle_timestamp"],
+        "collection_latency_ms": collector["collection_latency_ms"],
         "market_data_count": collector["market_data_count"],
         "last_insert_time": collector["last_insert_time"],
     }

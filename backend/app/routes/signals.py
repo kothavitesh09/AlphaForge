@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from app.database.mongo import get_database
-from app.services.market_data import KoinBXClient
+from app.services.market_data import MarketDataClient
 from app.services.decision_engine import InstitutionalDecisionEngine
 from app.services.sentiment import SentimentService
 from app.services.signals import SignalService
@@ -32,5 +32,5 @@ async def signal(symbol: str):
     latest = await SignalService(db).latest(symbol, limit=1)
     if latest:
         return latest[0]
-    market = KoinBXClient()
+    market = MarketDataClient()
     return await SignalService(db).generate(symbol, await market.candles(symbol), await market.order_book(symbol), await SentimentService().symbol_sentiment(symbol))

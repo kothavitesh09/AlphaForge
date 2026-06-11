@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from fastapi import HTTPException
 from app.repositories.base import MongoRepository, now_utc
-from app.services.market_data import KoinBXClient
+from app.services.market_data import MarketDataClient
 
 
 STARTING_BALANCE = 100000.0
@@ -12,7 +12,7 @@ class PaperTradingService:
         self.db = db
         self.trades = MongoRepository(db, "paper_trades")
         self.portfolios = MongoRepository(db, "portfolios")
-        self.market = KoinBXClient()
+        self.market = MarketDataClient()
 
     async def portfolio(self, user_id: str) -> dict:
         await self.auto_close_positions(user_id)

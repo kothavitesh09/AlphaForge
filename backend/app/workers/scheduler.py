@@ -4,7 +4,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.database.mongo import get_database
 from app.services.analytics_engine import AnalyticsEngine, MarketSentimentEngine, SignalValidationService
 from app.services.market_collector import MarketDataCollector, collector_state
-from app.services.market_data import KoinBXClient
+from app.services.market_data import MarketDataClient
 from app.services.ml_engine import MLTrainingService
 from app.services.notifications import TelegramNotifier
 from app.services.prediction_pipeline import PredictionPipelineService
@@ -27,7 +27,7 @@ async def collect_market_data() -> None:
 
 async def collect_and_signal() -> None:
     db = get_database()
-    market = KoinBXClient()
+    market = MarketDataClient()
     sentiment_service = SentimentService()
     signal_service = SignalService(db)
     notifier = TelegramNotifier()

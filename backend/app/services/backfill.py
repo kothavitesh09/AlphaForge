@@ -210,8 +210,8 @@ class BackfillService:
     def __init__(self, db, providers: list[HistoricalProvider] | None = None) -> None:
         self.db = db
         self.providers = providers or [
-            KoinBXHistoricalProvider(),
             CoinDCXHistoricalProvider(),
+            KoinBXHistoricalProvider(),
             CoinGeckoHistoricalProvider(),
             CryptoCompareHistoricalProvider(),
         ]
@@ -273,7 +273,12 @@ class BackfillService:
             },
             upsert=True,
         )
-        probes = [await provider.probe(symbol, interval) for provider in self.providers]
+        probes = []
+        for provider in self.providers:
+            result = await provider.probe(symbol, interval)
+            probes.append(result)
+            if result.candles:
+                break
         selected = self._select_source(probes)
         if not selected:
             result = {

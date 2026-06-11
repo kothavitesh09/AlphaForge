@@ -7,7 +7,7 @@ from app.services.analytics_engine import AnalyticsEngine, MarketSentimentEngine
 from app.services.accuracy import AccuracyService
 from app.services.advanced_indicators import persist_latest_indicators
 from app.services.backtesting import BacktestingService
-from app.services.market_data import KoinBXClient
+from app.services.market_data import MarketDataClient
 from app.services.market_trend import MarketTrendEngine
 from app.services.ml_dataset import MLDatasetService
 from app.services.ml_engine import MLTrainingService
@@ -20,13 +20,13 @@ router = APIRouter(tags=["Analytics"])
 
 @router.get("/indicators/{symbol}")
 async def indicators(symbol: str, timeframe: str = "1h"):
-    candles = await KoinBXClient().candles(symbol, timeframe)
+    candles = await MarketDataClient().candles(symbol, timeframe)
     return await persist_latest_indicators(get_database(), symbol, timeframe, candles)
 
 
 @router.get("/trend/{symbol}")
 async def trend(symbol: str, timeframe: str = "1h"):
-    return MarketTrendEngine().analyze(await KoinBXClient().candles(symbol, timeframe))
+    return MarketTrendEngine().analyze(await MarketDataClient().candles(symbol, timeframe))
 
 
 @router.get("/accuracy")
@@ -104,7 +104,7 @@ async def backtest_start(payload: dict | None = None):
     cursor = db.market_data.find({"symbol": symbol, "interval": interval}).sort([("timestamp", 1)]).limit(5000)
     candles = [item async for item in cursor]
     if not candles:
-        candles = await KoinBXClient().candles(symbol, interval)
+        candles = await MarketDataClient().candles(symbol, interval)
     signals = await MongoRepository(db, "signals").find_many({"symbol": symbol}, limit=1000, sort=[("created_at", -1)])
     return await BacktestingService(db).run(symbol, candles, signals)
 
@@ -118,7 +118,7 @@ async def backtest_results(symbol: str | None = None):
 @router.post("/backtest/{symbol}")
 async def backtest(symbol: str, timeframe: str = "1h"):
     db = get_database()
-    candles = await KoinBXClient().candles(symbol, timeframe)
+    candles = await MarketDataClient().candles(symbol, timeframe)
     signals = await MongoRepository(db, "signals").find_many({"symbol": symbol.upper()}, limit=500, sort=[("created_at", -1)])
     return await BacktestingService(db).run(symbol, candles, signals)
 

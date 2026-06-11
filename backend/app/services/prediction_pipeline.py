@@ -4,7 +4,7 @@ from typing import Any
 from app.core.config import SUPPORTED_INTERVALS, SUPPORTED_SYMBOLS
 from app.services.indicators import calculate_indicators
 from app.repositories.base import MongoRepository, now_utc
-from app.services.market_data import KoinBXClient
+from app.services.market_data import MarketDataClient
 from app.services.prediction import PredictionService
 from app.services.sentiment import SentimentService
 from app.services.signals import SignalService
@@ -35,7 +35,7 @@ def normalize_timeframe(timeframe: Any, default: str | None = "1h") -> str | Non
 class PredictionPipelineService:
     def __init__(self, db):
         self.db = db
-        self.market = KoinBXClient()
+        self.market = MarketDataClient()
         self.predictor = PredictionService()
         self.predictions = MongoRepository(db, "predictions")
         self.results = MongoRepository(db, "prediction_results")

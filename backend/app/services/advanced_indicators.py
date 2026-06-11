@@ -73,7 +73,7 @@ async def persist_latest_indicators(db, symbol: str, interval: str, candles: lis
         "interval": interval,
         "timeframe": interval,
         "timestamp": timestamp,
-        "source": "koinbx",
+        "source": str(candles[-1].get("source") or "coindcx"),
         **result,
         "updated_at": datetime.now(timezone.utc),
     }

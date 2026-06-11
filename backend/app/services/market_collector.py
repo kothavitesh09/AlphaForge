@@ -2,11 +2,12 @@ import logging
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from time import perf_counter
 from typing import Any
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.core.config import get_settings
 from app.services.advanced_indicators import persist_latest_indicators
-from app.services.market_data import KoinBXClient
+from app.services.market_data import MarketDataClient
 
 
 logger = logging.getLogger(__name__)
@@ -19,46 +20,49 @@ class CollectorState:
     last_error: str | None = None
     last_run_time: str | None = None
     inserted_count: int = 0
+    active_provider: str = "coindcx"
+    collection_latency_ms: float | None = None
 
 
 collector_state = CollectorState()
 
 
 class MarketDataCollector:
-    def __init__(self, db: AsyncIOMotorDatabase, market: KoinBXClient | None = None) -> None:
+    def __init__(self, db: AsyncIOMotorDatabase, market: MarketDataClient | None = None) -> None:
         self.db = db
-        self.market = market or KoinBXClient()
+        self.market = market or MarketDataClient()
         self.symbols = get_settings().collector_symbols
         self.intervals = get_settings().collector_intervals
 
     async def collect_once(self) -> int:
         collector_state.running = True
         collector_state.last_run_time = _utc_now_iso()
+        started_at = perf_counter()
         inserted = 0
 
         for symbol in self.symbols:
             for interval in self.intervals:
                 try:
                     logger.info("Fetching %s interval=%s", symbol, interval)
-                    candle = await self._latest_candle(symbol, interval)
-                    if not candle:
+                    candles = await self.market.candles(symbol, interval=interval, limit=240)
+                    collector_state.active_provider = self.market.active_provider
+                    if not candles:
                         logger.warning("No candle data returned symbol=%s interval=%s", symbol, interval)
                         continue
 
+                    candle = self._normalize_document(symbol, interval, candles[-1])
                     saved = await self._save_candle(candle)
                     if saved:
                         inserted += 1
                         collector_state.inserted_count += 1
-                        collector_state.last_insert_time = _utc_now_iso()
+                        collector_state.last_insert_time = candle["timestamp"]
                         logger.info("Saved %s Candle interval=%s", candle["symbol"], candle["interval"])
-                    candles = await self.market.candles(symbol, interval=interval, limit=240)
-                    if candles:
-                        await persist_latest_indicators(self.db, symbol, interval, candles)
+                    await persist_latest_indicators(self.db, symbol, interval, candles)
                 except Exception as exc:
                     collector_state.last_error = str(exc)
                     logger.exception("Collector Exception symbol=%s interval=%s error=%s", symbol, interval, exc)
                     continue
-
+        collector_state.collection_latency_ms = round((perf_counter() - started_at) * 1000, 2)
         return inserted
 
     async def run_forever(self, stop_event: asyncio.Event, interval_seconds: int = 60) -> None:
@@ -79,32 +83,6 @@ class MarketDataCollector:
 
         collector_state.running = False
 
-    async def _latest_candle(self, symbol: str, interval: str = "1m") -> dict[str, Any] | None:
-        symbol = symbol.upper()
-        candles = await self.market.candles(symbol, interval=interval, limit=1)
-        if candles:
-            logger.info("Fetched %s", symbol)
-            return self._normalize_document(symbol, interval, candles[-1])
-
-        ticker = await self.market.ticker(symbol)
-        price = float(ticker.get("last") or 0)
-        if price <= 0:
-            return None
-
-        logger.info("Fetched %s", symbol)
-        return self._normalize_document(
-            symbol,
-            interval,
-            {
-                "timestamp": _minute_iso(datetime.now(timezone.utc)),
-                "open": price,
-                "high": price,
-                "low": price,
-                "close": price,
-                "volume": float(ticker.get("volume_24h") or 0),
-            },
-        )
-
     def _normalize_document(self, symbol: str, interval: str, candle: dict[str, Any]) -> dict[str, Any]:
         timestamp = _minute_iso(_parse_datetime(candle.get("timestamp")))
         return {
@@ -116,7 +94,7 @@ class MarketDataCollector:
             "close": float(candle.get("close") or 0),
             "volume": float(candle.get("volume") or 0),
             "timestamp": timestamp,
-            "source": "koinbx",
+            "source": str(candle.get("source") or self.market.active_provider or "coindcx"),
             "updated_at": datetime.now(timezone.utc),
         }
 
@@ -142,6 +120,9 @@ async def collector_health(db: AsyncIOMotorDatabase) -> dict[str, Any]:
         "last_error": collector_state.last_error,
         "market_data_count": count,
         "latest_market_data_timestamp": latest_timestamp,
+        "active_provider": collector_state.active_provider,
+        "latest_candle_timestamp": latest_timestamp,
+        "collection_latency_ms": collector_state.collection_latency_ms,
     }
 
 

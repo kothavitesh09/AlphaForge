@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from app.database.mongo import get_database
 from app.services.dashboard import DashboardService
-from app.services.market_data import KoinBXClient
+from app.services.market_data import MarketDataClient
 
 
 router = APIRouter(prefix="/coins", tags=["Coins"])
@@ -14,5 +14,5 @@ async def coins():
 
 @router.get("/{symbol}")
 async def coin(symbol: str):
-    market = KoinBXClient()
+    market = MarketDataClient()
     return {"ticker": await market.ticker(symbol), "candles": await market.candles(symbol), "order_book": await market.order_book(symbol)}

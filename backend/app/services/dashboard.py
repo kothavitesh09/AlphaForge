@@ -1,12 +1,12 @@
 from app.repositories.base import MongoRepository
-from app.services.market_data import KoinBXClient
+from app.services.market_data import MarketDataClient
 from app.services.market_trend import MarketTrendEngine
 
 
 class DashboardService:
     def __init__(self, db):
         self.db = db
-        self.market = KoinBXClient()
+        self.market = MarketDataClient()
         self.signals = MongoRepository(db, "signals")
         self.results = MongoRepository(db, "prediction_results")
         self.predictions = MongoRepository(db, "predictions")
