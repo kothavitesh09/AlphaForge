@@ -16,3 +16,5 @@ lightgbm==4.5.0
 apscheduler==3.11.0
 python-dotenv==1.0.1
 pytest==8.3.4
+pymongo==4.10.1
+joblib==1.4.2
