@@ -6,9 +6,16 @@ export const API = {
   signals: `${API_ROOT}/signals`,
   signal: (symbol: string) => `${API_ROOT}/signals/${encodeURIComponent(symbol)}`,
   predictions: `${API_ROOT}/predictions`,
+  forecasts: `${API_ROOT}/forecasts`,
+  intelligence: `${API_ROOT}/intelligence`,
+  opportunities: `${API_ROOT}/opportunities`,
+  alphaScores: `${API_ROOT}/alpha-scores`,
+  marketRegimes: `${API_ROOT}/market-regimes`,
   analytics: `${API_ROOT}/analytics/stats`,
   mlAnalytics: `${API_ROOT}/ml/analytics`,
+  mlMonitoring: `${API_ROOT}/ml/monitoring`,
   portfolio: `${API_ROOT}/paper-trade/portfolio`,
+  paperAnalytics: `${API_ROOT}/paper-trade/analytics`,
   paperTrade: (side: "buy" | "sell") => `${API_ROOT}/paper-trade/${side}`,
   executeSignal: `${API_ROOT}/paper-trade/execute-signal`,
   markets: `${API_ROOT}/coins`,
@@ -52,8 +59,8 @@ export async function api<T>(pathOrUrl: string, options: RequestInit = {}): Prom
   return response.json();
 }
 
-export async function auth(path: "/auth/login" | "/auth/register", payload: Record<string, string>) {
-  const result = await api<{ access_token: string; user: Record<string, unknown> }>(path === "/auth/login" ? API.login : API.register, { method: "POST", body: JSON.stringify(payload) });
+export async function auth(url: string, payload: Record<string, string>) {
+  const result = await api<{ access_token: string; user: Record<string, unknown> }>(url, { method: "POST", body: JSON.stringify(payload) });
   localStorage.setItem("alphaforge_token", result.access_token);
   return result;
 }

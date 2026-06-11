@@ -1,12 +1,14 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, BarChart3, Bell, BrainCircuit, Coins, LayoutDashboard, Settings, Target, Wallet } from "lucide-react";
+import { Activity, BarChart3, BrainCircuit, Coins, LayoutDashboard, Radar, Settings, Target, TrendingUp, Wallet } from "lucide-react";
 import { ConnectivityStatus } from "@/components/trading-ui";
 
 const items = [
   { href: "/dashboard", label: "Command", icon: LayoutDashboard },
   { href: "/signals", label: "Trade Plans", icon: Target },
+  { href: "/forecasts", label: "Forecasts", icon: TrendingUp },
+  { href: "/intelligence", label: "Intel", icon: Radar },
   { href: "/coins", label: "Markets", icon: Coins },
   { href: "/portfolio", label: "Portfolio", icon: Wallet },
   { href: "/paper-trading", label: "Backtesting", icon: BarChart3 },
@@ -19,7 +21,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   return (
     <div className="min-h-screen bg-ink text-slate-100">
-      <aside className="fixed bottom-0 z-20 grid w-full grid-cols-8 border-t border-line bg-secondary/95 shadow-card backdrop-blur md:left-0 md:top-0 md:h-screen md:w-[260px] md:grid-cols-1 md:grid-rows-[auto_1fr_auto] md:border-r md:border-t-0">
+      <aside className="fixed bottom-0 z-20 grid w-full grid-cols-10 border-t border-line bg-secondary/95 shadow-card backdrop-blur md:left-0 md:top-0 md:h-screen md:w-[260px] md:grid-cols-1 md:grid-rows-[auto_1fr_auto] md:border-r md:border-t-0">
         <div className="hidden border-b border-line px-6 py-6 md:block">
           <div className="text-xl font-semibold tracking-tight">AlphaForge</div>
           <div className="mt-1 text-xs text-muted">AI trade intelligence</div>

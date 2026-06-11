@@ -5,6 +5,7 @@ from app.database.mongo import get_database
 from app.services.analytics_engine import AnalyticsEngine, MarketSentimentEngine, SignalValidationService
 from app.services.market_collector import MarketDataCollector, collector_state
 from app.services.market_data import MarketDataClient
+from app.services.intelligence import IntelligenceService
 from app.services.ml_engine import MLTrainingService
 from app.services.notifications import TelegramNotifier
 from app.services.prediction_pipeline import PredictionPipelineService
@@ -54,6 +55,10 @@ async def generate_predictions_and_accuracy() -> None:
     await AnalyticsEngine(db).update()
 
 
+async def refresh_intelligence_layer() -> None:
+    await IntelligenceService(get_database()).refresh_all()
+
+
 async def retrain_ml_models() -> None:
     await MLTrainingService(get_database()).run()
 
@@ -64,6 +69,7 @@ def start_scheduler() -> None:
         return
     scheduler.add_job(collect_and_signal, "interval", minutes=30, id="signal_generation", replace_existing=True, next_run_time=None)
     scheduler.add_job(generate_predictions_and_accuracy, "interval", minutes=15, id="prediction_generation", replace_existing=True, next_run_time=None)
+    scheduler.add_job(refresh_intelligence_layer, "interval", minutes=30, id="forecast_intelligence", replace_existing=True, next_run_time=None)
     scheduler.add_job(retrain_ml_models, "cron", hour=2, id="daily_ml_retraining", replace_existing=True, next_run_time=None)
     scheduler.add_job(retrain_ml_models, "cron", day_of_week="sun", hour=3, id="weekly_ml_retraining", replace_existing=True, next_run_time=None)
     scheduler.start()

@@ -34,6 +34,13 @@ EXPECTED_COLLECTIONS = (
     "signal_validations",
     "settings",
     "users",
+    "forecasts",
+    "alpha_scores",
+    "market_regimes",
+    "opportunities",
+    "ml_monitoring",
+    "system_health",
+    "job_runs",
 )
 
 
@@ -121,6 +128,17 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await _ensure_index(db.signal_validations, [("signal_id", 1)], unique=True, name="signal_validation_signal_id")
     await _ensure_index(db.signal_validations, [("symbol", 1), ("created_at", -1)], name="signal_validation_symbol_created_at")
     await _ensure_index(db.settings, [("user_id", 1)], unique=True)
+    await _ensure_index(db.forecasts, [("symbol", 1)], unique=True)
+    await _ensure_index(db.forecasts, [("alpha_score", -1), ("confidence", -1)], name="forecasts_alpha_confidence")
+    await _ensure_index(db.alpha_scores, [("symbol", 1)], unique=True)
+    await _ensure_index(db.alpha_scores, [("rank", 1), ("alpha_score", -1)], name="alpha_scores_rank_score")
+    await _ensure_index(db.market_regimes, [("symbol", 1)], unique=True)
+    await _ensure_index(db.market_regimes, [("regime", 1), ("confidence", -1)], name="market_regimes_regime_confidence")
+    await _ensure_index(db.opportunities, [("symbol", 1)], unique=True)
+    await _ensure_index(db.opportunities, [("rank", 1), ("alpha_score", -1)], name="opportunities_rank_score")
+    await _ensure_index(db.ml_monitoring, [("symbol", 1)], unique=True)
+    await _ensure_index(db.system_health, [("component", 1)], unique=True)
+    await _ensure_index(db.job_runs, [("job", 1), ("started_at", -1)], name="job_runs_job_started")
     logger.info("MongoDB indexes ensured")
 
 

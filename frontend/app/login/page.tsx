@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { auth } from "@/services/api";
+import { API, auth } from "@/services/api";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -11,7 +11,7 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    try { await auth("/auth/login", { email, password }); router.push("/dashboard"); } catch (err) { setError(err instanceof Error ? err.message : "Login failed"); }
+    try { await auth(API.login, { email, password }); router.push("/dashboard"); } catch (err) { setError(err instanceof Error ? err.message : "Login failed"); }
   }
   return <AuthFrame title="Login" error={error} submit={submit} email={email} setEmail={setEmail} password={password} setPassword={setPassword} footer={<Link href="/register" className="text-buy">Create account</Link>} />;
 }
