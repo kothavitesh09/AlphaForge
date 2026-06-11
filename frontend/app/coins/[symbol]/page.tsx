@@ -5,11 +5,12 @@ import { MarketChart } from "@/components/MarketChart";
 import { ErrorState, LoadingGrid } from "@/components/State";
 import { ActionPill, Metric, Panel, SectionTitle, StatusLine, formatInr, normalizeSignal, signalTone } from "@/components/trading-ui";
 import { useApi } from "@/hooks/useApi";
+import { API } from "@/services/api";
 import { Candle, Ticker } from "@/types";
 
 export default function CoinPage({ params }: { params: Promise<{ symbol: string }> }) {
   const { symbol } = use(params);
-  const { data, loading, error } = useApi<{ ticker: Ticker; candles: Candle[] }>(`/coins/${symbol}`);
+  const { data, loading, error } = useApi<{ ticker: Ticker; candles: Candle[] }>(API.coin(symbol));
   const ticker = data?.ticker;
   const signal = normalizeSignal(ticker?.signal);
 

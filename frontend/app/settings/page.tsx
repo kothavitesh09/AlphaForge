@@ -5,7 +5,7 @@ import { Shell } from "@/components/Shell";
 import { AuthRequired } from "@/components/AuthRequired";
 import { ErrorState, LoadingGrid } from "@/components/State";
 import { Panel, SectionTitle } from "@/components/trading-ui";
-import { api } from "@/services/api";
+import { API, api } from "@/services/api";
 import { useApi } from "@/hooks/useApi";
 
 type Settings = { exchange_selection: string; refresh_interval: number; risk_profile: string; theme: string; auto_trading_enabled: boolean };
@@ -23,14 +23,18 @@ export default function SettingsPage() {
 }
 
 function SettingsForm() {
-  const { data, loading, error } = useApi<Settings>("/settings");
+  const { data, loading, error } = useApi<Settings>(API.settings);
   const [message, setMessage] = useState("");
   const [draft, setDraft] = useState<Partial<Settings>>({});
   const settings = { ...data, ...draft } as Settings;
   async function save() {
     setMessage("");
-    await api("/settings", { method: "PUT", body: JSON.stringify(draft) });
-    setMessage("Settings saved");
+    try {
+      await api(API.settings, { method: "PUT", body: JSON.stringify(draft) });
+      setMessage("Settings saved");
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Settings failed to save");
+    }
   }
   return (
     <div className="space-y-6">

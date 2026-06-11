@@ -19,6 +19,7 @@ import {
   tradePlanScore
 } from "@/components/trading-ui";
 import { useApi } from "@/hooks/useApi";
+import { API } from "@/services/api";
 import { Signal, Ticker } from "@/types";
 
 type Dashboard = {
@@ -37,7 +38,7 @@ type Dashboard = {
 };
 
 export default function DashboardPage() {
-  const { data, loading, error } = useApi<Dashboard>("/dashboard");
+  const { data, loading, error } = useApi<Dashboard>(API.dashboard);
   const tickers = tickerMap(data?.market_overview);
   const plans = [...(data?.top_buy_signals || []), ...(data?.top_sell_signals || [])]
     .filter((signal) => normalizeSignal(signal.signal) !== "HOLD")

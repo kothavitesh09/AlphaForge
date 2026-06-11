@@ -3,6 +3,7 @@ import { Shell } from "@/components/Shell";
 import { MetricCard } from "@/components/MetricCard";
 import { ErrorState, LoadingGrid } from "@/components/State";
 import { useApi } from "@/hooks/useApi";
+import { API } from "@/services/api";
 
 type Analytics = {
   metrics: Record<string, number>;
@@ -24,7 +25,7 @@ type Analytics = {
 type SymbolRow = { symbol: string; total: number; accuracy: number; average_return: number };
 
 export default function AnalyticsPage() {
-  const { data, loading, error } = useApi<Analytics>("/analytics/stats");
+  const { data, loading, error } = useApi<Analytics>(API.analytics);
   return (
     <Shell>
       <div className="mb-6 flex items-center justify-between gap-4">

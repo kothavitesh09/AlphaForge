@@ -4,7 +4,7 @@ import { PlayCircle } from "lucide-react";
 import { Shell } from "@/components/Shell";
 import { AuthRequired } from "@/components/AuthRequired";
 import { Panel, SectionTitle } from "@/components/trading-ui";
-import { api } from "@/services/api";
+import { API, api } from "@/services/api";
 
 export default function PaperTradingPage() {
   const [symbol, setSymbol] = useState("BTC_INR");
@@ -13,7 +13,7 @@ export default function PaperTradingPage() {
   async function trade(side: "buy" | "sell") {
     setMessage("");
     try {
-      await api(`/paper-trade/${side}`, { method: "POST", body: JSON.stringify({ symbol, quantity: Number(quantity) }) });
+      await api(API.paperTrade(side), { method: "POST", body: JSON.stringify({ symbol, quantity: Number(quantity) }) });
       setMessage(`${side.toUpperCase()} order filled`);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "Trade failed");

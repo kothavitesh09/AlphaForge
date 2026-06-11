@@ -3,6 +3,7 @@ import { Shell } from "@/components/Shell";
 import { MetricCard } from "@/components/MetricCard";
 import { ErrorState, LoadingGrid } from "@/components/State";
 import { useApi } from "@/hooks/useApi";
+import { API } from "@/services/api";
 
 type ModelResult = {
   model: string;
@@ -24,7 +25,7 @@ type MLAnalytics = {
 };
 
 export default function MLAnalyticsPage() {
-  const { data, loading, error } = useApi<MLAnalytics>("/ml/analytics");
+  const { data, loading, error } = useApi<MLAnalytics>(API.mlAnalytics);
   const best = data?.best_model;
   return (
     <Shell>

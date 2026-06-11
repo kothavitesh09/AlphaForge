@@ -5,7 +5,7 @@ import { Shell } from "@/components/Shell";
 import { ErrorState, LoadingGrid } from "@/components/State";
 import { EmptyState, Panel, SectionTitle, StatusLine, formatInr, normalizeSignal, riskLabel, tickerMap } from "@/components/trading-ui";
 import { useApi } from "@/hooks/useApi";
-import { api } from "@/services/api";
+import { API, api } from "@/services/api";
 import { Prediction, Signal, Ticker } from "@/types";
 
 const TIMEFRAMES = ["15m", "1h", "4h", "1d"];
@@ -23,9 +23,9 @@ type Opportunity = {
 };
 
 export default function SignalsPage() {
-  const { data: predictions, loading: predictionsLoading, error: predictionsError } = useApi<Prediction[]>("/predictions");
-  const { data: signals, loading: signalsLoading, error: signalsError } = useApi<Signal[]>("/signals");
-  const { data: tickers } = useApi<Ticker[]>("/coins");
+  const { data: predictions, loading: predictionsLoading, error: predictionsError } = useApi<Prediction[]>(API.predictions);
+  const { data: signals, loading: signalsLoading, error: signalsError } = useApi<Signal[]>(API.signals);
+  const { data: tickers } = useApi<Ticker[]>(API.markets);
   const [message, setMessage] = useState("");
   const prices = tickerMap(tickers);
 
@@ -40,7 +40,7 @@ export default function SignalsPage() {
     }
     setMessage("");
     try {
-      await api("/paper-trade/execute-signal", { method: "POST", body: JSON.stringify({ signal_id: signal.id, risk_fraction: 0.1 }) });
+      await api(API.executeSignal, { method: "POST", body: JSON.stringify({ signal_id: signal.id, risk_fraction: 0.1 }) });
       setMessage(`${signal.symbol} trade plan executed`);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "Trade failed");

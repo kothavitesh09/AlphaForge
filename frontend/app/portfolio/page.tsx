@@ -4,6 +4,7 @@ import { AuthRequired } from "@/components/AuthRequired";
 import { ErrorState, LoadingGrid } from "@/components/State";
 import { EmptyState, Metric, Panel, SectionTitle, formatInr } from "@/components/trading-ui";
 import { useApi } from "@/hooks/useApi";
+import { API } from "@/services/api";
 
 type Portfolio = {
   cash_balance: number;
@@ -33,7 +34,7 @@ export default function PortfolioPage() {
 }
 
 function PortfolioContent() {
-  const { data, loading, error } = useApi<Portfolio>("/paper-trade/portfolio");
+  const { data, loading, error } = useApi<Portfolio>(API.portfolio);
   const positions = Object.entries(data?.positions || {});
   return (
     <>

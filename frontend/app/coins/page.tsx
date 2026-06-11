@@ -6,10 +6,11 @@ import { Shell } from "@/components/Shell";
 import { ErrorState, LoadingGrid } from "@/components/State";
 import { ActionPill, EmptyState, Panel, formatInr } from "@/components/trading-ui";
 import { useApi } from "@/hooks/useApi";
+import { API } from "@/services/api";
 import { Ticker } from "@/types";
 
 export default function CoinsPage() {
-  const { data, loading, error } = useApi<Ticker[]>("/coins");
+  const { data, loading, error } = useApi<Ticker[]>(API.markets);
   const [query, setQuery] = useState("");
   const [trend, setTrend] = useState("ALL");
   const [timeframe, setTimeframe] = useState("All Timeframes");
