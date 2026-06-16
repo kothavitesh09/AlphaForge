@@ -2,6 +2,7 @@ import logging
 from app.repositories.base import MongoRepository, now_utc
 from app.services.decision_engine import InstitutionalDecisionEngine
 from app.services.indicators import calculate_indicators, order_book_imbalance
+from app.services.performance_engine import PerformanceEngine
 from app.services.prediction import PredictionService
 
 
@@ -21,6 +22,7 @@ class SignalService:
         record = self.record_from_decision(symbol, decision, analysis)
         saved_signal = await self.signals.insert(record)
         logger.info("Signal Generated symbol=%s signal=%s confidence=%s", symbol.upper(), saved_signal.get("signal"), saved_signal.get("confidence"))
+        await PerformanceEngine(self.signals.collection.database).ensure_simulated_trade(saved_signal)
         if decision["status"] == "TRADE":
             await self.predictions.insert({"symbol": symbol.upper(), "signal_id": saved_signal["id"], **decision, "created_at": now_utc()})
         return saved_signal

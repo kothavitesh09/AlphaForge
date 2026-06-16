@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from app.database.mongo import get_database
 from app.repositories.base import serialize
-from app.services.prediction_pipeline import PREDICTION_TIMEFRAMES, PredictionPipelineService, normalize_timeframe
+from app.services.prediction_pipeline import PREDICTION_TIMEFRAMES, PredictionPipelineService, _iso, normalize_timeframe, now_utc
 
 
 router = APIRouter(prefix="/predictions", tags=["Predictions"])
@@ -18,8 +18,16 @@ async def predictions():
                     "normalized_timeframe": {"$toLower": {"$toString": {"$ifNull": ["$timeframe", ""]}}},
                 }
             },
-            {"$match": {"normalized_symbol": {"$ne": ""}, "normalized_timeframe": {"$in": list(PREDICTION_TIMEFRAMES)}}},
-            {"$sort": {"updated_at": -1, "created_at": -1, "source_timestamp": -1}},
+            {
+                "$match": {
+                    "normalized_symbol": {"$ne": ""},
+                    "normalized_timeframe": {"$in": list(PREDICTION_TIMEFRAMES)},
+                    "bootstrap_evaluation": {"$ne": True},
+                    "stale": {"$ne": True},
+                    "target_timestamp": {"$gt": _iso(now_utc())},
+                }
+            },
+            {"$sort": {"prediction_timestamp": -1, "updated_at": -1, "created_at": -1, "source_timestamp": -1}},
             {"$group": {"_id": {"symbol": "$normalized_symbol", "timeframe": "$normalized_timeframe"}, "document": {"$first": "$$ROOT"}}},
             {"$replaceRoot": {"newRoot": "$document"}},
             {"$sort": {"opportunity_score": -1, "confidence": -1}},
@@ -50,6 +58,11 @@ async def evaluate_predictions():
     return await PredictionPipelineService(get_database()).evaluate_predictions()
 
 
+@router.get("/diagnostics")
+async def prediction_diagnostics():
+    return await PredictionPipelineService(get_database()).diagnostics()
+
+
 @router.post("/seed-evaluation")
 async def seed_evaluation_predictions(payload: dict | None = None):
     payload = payload or {}
@@ -76,8 +89,16 @@ async def predictions_for_symbol(symbol: str):
                     "normalized_timeframe": {"$toLower": {"$toString": {"$ifNull": ["$timeframe", ""]}}},
                 }
             },
-            {"$match": {"normalized_symbol": normalized_symbol, "normalized_timeframe": {"$in": list(PREDICTION_TIMEFRAMES)}}},
-            {"$sort": {"updated_at": -1, "created_at": -1, "source_timestamp": -1}},
+            {
+                "$match": {
+                    "normalized_symbol": normalized_symbol,
+                    "normalized_timeframe": {"$in": list(PREDICTION_TIMEFRAMES)},
+                    "bootstrap_evaluation": {"$ne": True},
+                    "stale": {"$ne": True},
+                    "target_timestamp": {"$gt": _iso(now_utc())},
+                }
+            },
+            {"$sort": {"prediction_timestamp": -1, "updated_at": -1, "created_at": -1, "source_timestamp": -1}},
             {"$group": {"_id": "$normalized_timeframe", "document": {"$first": "$$ROOT"}}},
             {"$replaceRoot": {"newRoot": "$document"}},
         ]

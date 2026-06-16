@@ -51,11 +51,13 @@ class IntelligenceService:
                 opportunities.append(opportunity)
                 monitoring.append(monitor)
 
-            opportunities = sorted(opportunities, key=lambda row: (row["alpha_score"], row["expected_return"], row["confidence"]), reverse=True)
-            for index, row in enumerate(opportunities, 1):
+            ranked_opportunities = await self._ranked_opportunities()
+            for index, row in enumerate(ranked_opportunities, 1):
                 row["rank"] = index
                 await self.db.opportunities.update_one({"symbol": row["symbol"]}, {"$set": {"rank": index, "updated_at": now_utc()}})
                 await self.db.alpha_scores.update_one({"symbol": row["symbol"]}, {"$set": {"rank": index, "updated_at": now_utc()}})
+            if set(symbols) == set(SUPPORTED_SYMBOLS):
+                await self._cleanup_rankings(symbols)
 
             duration = round((perf_counter() - started) * 1000, 2)
             await self._job_finished(run, "completed", duration, {"forecasts": len(forecasts), "opportunities": len(opportunities)})
@@ -155,7 +157,12 @@ class IntelligenceService:
         if len(candles) < 30:
             return None
         indicators = await self.db.indicator_data.find_one({"symbol": symbol, "interval": "1h"}, sort=[("timestamp", -1)]) or {}
-        predictions = [_clean(row) async for row in self.db.predictions.find({"symbol": symbol}).sort([("created_at", -1)]).limit(20)]
+        predictions = [
+            _clean(row)
+            async for row in self.db.predictions.find({"symbol": symbol, "bootstrap_evaluation": {"$ne": True}, "stale": {"$ne": True}})
+            .sort([("prediction_timestamp", -1), ("updated_at", -1), ("created_at", -1)])
+            .limit(20)
+        ]
         ensemble = [_clean(row) async for row in self.db.ensemble_predictions.find({"symbol": symbol}).sort([("created_at", -1)]).limit(10)]
         signal = await self.db.signals.find_one({"symbol": symbol}, sort=[("created_at", -1)]) or {}
         sentiment = await self.db.market_sentiment.find_one(sort=[("created_at", -1)]) or {}
@@ -177,7 +184,7 @@ class IntelligenceService:
         momentum_24h = self._window_return(candles, 24)
         momentum_48h = self._window_return(candles, 48)
         momentum_7d = self._window_return(candles, min(168, len(candles) - 1))
-        prediction_moves = [float(row.get("predicted_change_pct", 0)) for row in context["predictions"] if row.get("predicted_change_pct") is not None]
+        prediction_moves = [float(row.get("predicted_return_pct", row.get("predicted_change_pct", 0))) for row in context["predictions"] if row.get("predicted_change_pct") is not None or row.get("predicted_return_pct") is not None]
         ml_bias = self._direction_bias(context["ml"] + context["ensemble"])
         rule_move = mean([momentum_24h, momentum_48h, momentum_7d])
         model_move = mean(prediction_moves) if prediction_moves else 0
@@ -219,7 +226,7 @@ class IntelligenceService:
         ml_rows = context["ml"] + context["ensemble"]
         indicators = context["indicators"]
         signal = context["signal"]
-        prediction_quality = mean([float(row.get("confidence", 0)) for row in predictions[:4]]) if predictions else 0
+        prediction_quality = mean([float(row.get("confidence_score", row.get("confidence", 0))) for row in predictions[:4]]) if predictions else 0
         ml_confidence = mean([float(row.get("probability", row.get("confidence", 0))) for row in ml_rows[:6]]) if ml_rows else prediction_quality
         trend_strength = float(indicators.get("adx") or indicators.get("trend_score") or 50)
         volume_strength = max(0, min(100, float(indicators.get("volume_ratio", 1)) * 35))
@@ -264,16 +271,18 @@ class IntelligenceService:
         close = float(candles[-1]["close"])
         volume_ratio = float(indicators.get("volume_ratio") or 1)
         volatility = (atr / close * 100) if close else 0
-        if volatility >= 4 or volume_ratio >= 2.2:
-            regime = "HIGH_VOLATILITY"
-        elif adx >= 28 and volume_ratio >= 1.5:
-            regime = "BREAKOUT"
-        elif ema20 > ema50 > ema200 and adx >= 18:
-            regime = "BULL"
-        elif ema20 < ema50 < ema200 and adx >= 18:
-            regime = "BEAR"
+        if ema20 > ema50 > ema200 and adx >= 28:
+            regime = "Strong Bullish"
+        elif ema20 > ema50 and adx >= 18:
+            regime = "Bullish"
+        elif ema20 < ema50 < ema200 and adx >= 28:
+            regime = "Strong Bearish"
+        elif ema20 < ema50 and adx >= 18:
+            regime = "Bearish"
+        elif volatility < 1.2:
+            regime = "Range"
         else:
-            regime = "RANGE"
+            regime = "Neutral"
         confidence = round(max(1, min(99, adx * 1.6 + min(30, volume_ratio * 10) + min(25, volatility * 4))), 2)
         return {
             "symbol": context["symbol"],
@@ -284,19 +293,69 @@ class IntelligenceService:
         }
 
     def _opportunity(self, context: dict, forecast: dict, alpha: dict, regime: dict) -> dict:
+        prediction = context["predictions"][0] if context["predictions"] else {}
         expected_return = float(forecast.get("expected_return", 0))
         risk_score = round(max(1, min(100, 100 - alpha["components"]["risk_reward"] + abs(expected_return) * 1.5)), 2)
+        recommended_action = prediction.get("recommended_action") or ("BUY NOW" if expected_return > 1 else "SELL" if expected_return < -1 else "WAIT")
+        action_confidence = float(prediction.get("action_confidence") or prediction.get("confidence_score") or alpha["confidence"])
+        setup = self._setup(context, prediction, regime, expected_return)
+        validation_success = float(prediction.get("historical_win_rate") or 50)
+        rr = float(prediction.get("risk_reward_value") or _risk_reward_number(prediction.get("risk_reward_ratio")) or 0)
+        alpha_score = self._alpha_score_v2(
+            expected_return=float(prediction.get("predicted_return_pct", expected_return)),
+            confidence=float(prediction.get("calibrated_confidence", prediction.get("confidence_score", alpha["confidence"]))),
+            historical_win_rate=float(prediction.get("historical_win_rate") or 50),
+            risk_reward=rr,
+            regime_score=float(prediction.get("market_regime_score") or 50),
+            volume_strength=float(alpha["components"].get("volume_strength") or 0),
+            similarity=float(prediction.get("similarity_score") or 50),
+            validation_success=validation_success,
+        )
         return {
             "symbol": context["symbol"],
-            "alpha_score": alpha["alpha_score"],
-            "expected_return": round(expected_return, 4),
-            "confidence": alpha["confidence"],
-            "risk_score": risk_score,
+            "asset_group": "CORE" if context["symbol"] in {"BTC_INR", "BDX_INR"} else "DISCOVERY",
+            "alpha_score": alpha_score,
+            "expected_return": round(float(prediction.get("predicted_return_pct", expected_return)), 4),
+            "confidence": float(prediction.get("calibrated_confidence", prediction.get("confidence_score", alpha["confidence"]))),
+            "calibrated_confidence": float(prediction.get("calibrated_confidence", prediction.get("confidence_score", alpha["confidence"]))),
+            "risk_score": float(prediction.get("risk_score", risk_score)),
             "rank": 0,
-            "market_regime": regime["regime"],
+            "market_regime": prediction.get("market_regime") or regime["regime"],
             "forecast_24h": forecast["forecast_24h"],
             "forecast_48h": forecast["forecast_48h"],
             "forecast_7d": forecast["forecast_7d"],
+            "recommended_action": recommended_action,
+            "action_confidence": action_confidence,
+            "action_reason": self._action_reason(recommended_action, prediction, expected_return),
+            "action_priority": self._action_priority(recommended_action, prediction, expected_return),
+            "setup_type": setup["setup_type"],
+            "setup_strength": setup["setup_strength"],
+            "discovery_score": setup["discovery_score"],
+            "volume_strength": float(alpha["components"].get("volume_strength") or 0),
+            "validation_success_rate": validation_success,
+            "entry_price": prediction.get("entry_price"),
+            "entry_zone": prediction.get("entry_zone"),
+            "stop_loss": prediction.get("stop_loss"),
+            "target_1": prediction.get("target_1"),
+            "target_2": prediction.get("target_2"),
+            "target_3": prediction.get("target_3"),
+            "expected_price": prediction.get("expected_price") or prediction.get("predicted_price"),
+            "expected_peak_price": prediction.get("expected_peak_price"),
+            "expected_peak_time": prediction.get("expected_peak_time"),
+            "expected_pullback_price": prediction.get("expected_pullback_price"),
+            "expected_pullback_time": prediction.get("expected_pullback_time"),
+            "holding_duration": prediction.get("holding_duration"),
+            "profit_potential": prediction.get("profit_potential"),
+            "expected_drawdown": prediction.get("expected_drawdown"),
+            "historical_win_rate": prediction.get("historical_win_rate"),
+            "pattern_confidence": prediction.get("pattern_confidence"),
+            "risk_reward_ratio": prediction.get("risk_reward_ratio"),
+            "risk_reward_value": rr,
+            "buy_score": prediction.get("buy_score"),
+            "sell_score": prediction.get("sell_score"),
+            "reentry_score": prediction.get("reentry_score"),
+            "opportunity_score_v2": prediction.get("opportunity_score_v2"),
+            "overall_opportunity_score": prediction.get("overall_opportunity_score"),
             "created_at": now_utc(),
         }
 
@@ -352,6 +411,18 @@ class IntelligenceService:
     async def _upsert(self, collection: str, query: dict, document: dict) -> None:
         await self.db[collection].update_one(query, {"$set": {**document, "updated_at": now_utc()}, "$setOnInsert": {"first_created_at": now_utc()}}, upsert=True)
 
+    async def _cleanup_rankings(self, symbols: list[str]) -> None:
+        query = {"$or": [{"symbol": {"$exists": False}}, {"symbol": {"$nin": symbols}}, {"symbol": {"$in": ["", None]}}]}
+        for collection in ("opportunities", "alpha_scores", "forecasts", "market_regimes", "ml_monitoring"):
+            await self.db[collection].delete_many(query)
+
+    async def _ranked_opportunities(self) -> list[dict]:
+        rows = [
+            _clean(row)
+            async for row in self.db.opportunities.find({"symbol": {"$exists": True, "$nin": ["", None]}})
+        ]
+        return sorted(rows, key=lambda row: (float(row.get("overall_opportunity_score") or row.get("opportunity_score_v2") or row.get("alpha_score", 0)), float(row.get("expected_return", 0)), float(row.get("confidence", 0))), reverse=True)
+
     async def _job_started(self, job: str) -> dict:
         run = {"job": job, "status": "running", "started_at": now_utc(), "created_at": now_utc()}
         result = await self.db.job_runs.insert_one(run)
@@ -403,6 +474,69 @@ class IntelligenceService:
     def _price(self, current: float, move_pct: float) -> float:
         return round(current * (1 + move_pct / 100), 8)
 
+    def _action_reason(self, action: str, prediction: dict, expected_return: float) -> str:
+        if prediction.get("filter_reasons"):
+            return ", ".join(prediction.get("filter_reasons", [])[:3])
+        if action == "BUY NOW":
+            return "Expected return, confidence, and risk/reward pass actionable thresholds"
+        if action == "BUY AGAIN":
+            return "Pullback/re-entry profile is favorable after the expected peak"
+        if action in {"SELL", "TAKE PROFIT"}:
+            return "Expected return or lifecycle risk favors reducing exposure"
+        if action == "HOLD":
+            return "Prediction edge is limited; maintain current exposure"
+        return "Wait for better return, confidence, or risk/reward confirmation"
+
+    def _action_priority(self, action: str, prediction: dict, expected_return: float) -> int:
+        score = float(prediction.get("overall_opportunity_score") or prediction.get("opportunity_score_v2") or abs(expected_return) * 10)
+        if action == "BUY NOW":
+            score += 15
+        if action in {"SELL", "TAKE PROFIT"}:
+            score += 8
+        return int(max(1, min(100, round(score))))
+
+    def _setup(self, context: dict, prediction: dict, regime: dict, expected_return: float) -> dict:
+        indicators = context["indicators"]
+        volume_ratio = float(indicators.get("volume_ratio") or 1)
+        volatility = float(indicators.get("volatility") or 0)
+        trend = float(indicators.get("trend_strength") or 0)
+        rsi = float(indicators.get("rsi") or 50)
+        ema20 = float(indicators.get("ema20") or 0)
+        ema50 = float(indicators.get("ema50") or 0)
+        regime_name = str(prediction.get("market_regime") or regime.get("regime") or "")
+        if volume_ratio >= 1.8 and volatility >= 1.5:
+            setup_type = "Volume Spike"
+        elif volatility >= 2.5:
+            setup_type = "Volatility Expansion"
+        elif ema20 > ema50 and trend > 0.5 and expected_return > 0:
+            setup_type = "Trend Continuation"
+        elif rsi < 38 and expected_return > 0:
+            setup_type = "Pullback"
+        elif rsi > 68 and expected_return < 0:
+            setup_type = "Distribution"
+        elif "Bearish" in regime_name and expected_return > 0:
+            setup_type = "Trend Reversal"
+        elif abs(trend) < 0.25 and volume_ratio >= 1.2:
+            setup_type = "Accumulation"
+        else:
+            setup_type = "Breakout" if expected_return > 1 else "Neutral"
+        strength = max(1, min(100, abs(expected_return) * 10 + volume_ratio * 18 + abs(trend) * 8 + volatility * 6))
+        discovery = max(1, min(100, strength * 0.45 + float(prediction.get("pattern_confidence") or 50) * 0.25 + float(prediction.get("confidence_score") or 50) * 0.30))
+        return {"setup_type": setup_type, "setup_strength": round(strength, 2), "discovery_score": round(discovery, 2)}
+
+    def _alpha_score_v2(self, expected_return: float, confidence: float, historical_win_rate: float, risk_reward: float, regime_score: float, volume_strength: float, similarity: float, validation_success: float) -> float:
+        score = (
+            min(100, abs(expected_return) * 10) * 0.20
+            + confidence * 0.20
+            + historical_win_rate * 0.15
+            + min(100, risk_reward * 25) * 0.15
+            + regime_score * 0.10
+            + min(100, volume_strength) * 0.08
+            + similarity * 0.07
+            + validation_success * 0.05
+        )
+        return round(max(0, min(100, score)), 2)
+
     def _returns(self, values: list[float]) -> list[float]:
         if not values:
             return []
@@ -450,3 +584,16 @@ def _is_number(value: Any) -> bool:
         return math.isfinite(number)
     except (TypeError, ValueError):
         return False
+
+
+def _risk_reward_number(value: Any) -> float:
+    text = str(value or "")
+    if ":" in text:
+        try:
+            return float(text.split(":")[-1])
+        except ValueError:
+            return 0
+    try:
+        return float(text)
+    except ValueError:
+        return 0

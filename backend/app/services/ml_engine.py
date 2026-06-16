@@ -61,8 +61,7 @@ class MLTrainingService:
         return {"features": features, "labels": labels, "training": training, "predictions": predictions, "ensemble": ensemble}
 
     async def build_feature_store(self, symbols: list[str], timeframes: list[str], limit_per_symbol: int = 10000) -> dict:
-        sentiment = await self.db.market_sentiment.find_one(sort=[("created_at", -1)])
-        sentiment_score = float((sentiment or {}).get("score", 50))
+        sentiment_rows = [row async for row in self.db.market_sentiment.find({}).sort([("created_at", 1)]).limit(10000)]
         inserted = 0
         updated = 0
         skipped = []
@@ -75,7 +74,7 @@ class MLTrainingService:
                 if len(candles) < 30:
                     skipped.append({"symbol": symbol, "timeframe": timeframe, "reason": "insufficient_candles", "candles": len(candles)})
                     continue
-                rows = self._feature_rows(symbol, timeframe, candles, sentiment_score)
+                rows = self._feature_rows(symbol, timeframe, candles, sentiment_rows)
                 result = await self._bulk_upsert("ml_features", rows, ("symbol", "timeframe", "timestamp"))
                 inserted += result["inserted"]
                 updated += result["updated"]
@@ -223,7 +222,7 @@ class MLTrainingService:
             "recent_ml_predictions": predictions[:50],
         }
 
-    def _feature_rows(self, symbol: str, timeframe: str, candles: list[dict], sentiment_score: float) -> list[dict]:
+    def _feature_rows(self, symbol: str, timeframe: str, candles: list[dict], sentiment_rows: list[dict]) -> list[dict]:
         df = calculate_indicators(candles)
         df["timestamp"] = [item["timestamp"] for item in candles]
         df["sma20"] = df["close"].rolling(20).mean().fillna(df["close"])
@@ -242,6 +241,7 @@ class MLTrainingService:
             resistance = float(window["high"].max())
             close = float(row["close"])
             trend = MarketTrendEngine().analyze(candles[max(0, index - 240) : index + 1])
+            sentiment_score = _sentiment_asof(sentiment_rows, str(row["timestamp"]))
             rows.append({
                 "symbol": symbol,
                 "timeframe": timeframe,
@@ -452,3 +452,20 @@ def _serializable(document: dict) -> dict:
         if isinstance(value, datetime):
             item[key] = value.isoformat()
     return item
+
+
+def _sentiment_asof(rows: list[dict], timestamp: str) -> float:
+    try:
+        target = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return 50.0
+    score = 50.0
+    for row in rows:
+        created_at = row.get("created_at")
+        if not isinstance(created_at, datetime):
+            continue
+        if created_at <= target:
+            score = float(row.get("score", score))
+        else:
+            break
+    return score

@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.core.config import get_settings
 from app.database.mongo import close_mongo, connect_mongo, get_database
-from app.routes import analytics, auth, backfill, coins, dashboard, intelligence, paper_trade, predictions, signals, ws
+from app.routes import analytics, auth, backfill, coins, dashboard, intelligence, paper_trade, performance, predictions, signals, ws
 from app.services.market_collector import collector_health
 from app.workers.scheduler import is_market_collector_running, start_scheduler, stop_scheduler
 
@@ -68,5 +68,6 @@ app.include_router(predictions.router, prefix="/api")
 app.include_router(paper_trade.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(intelligence.router, prefix="/api")
+app.include_router(performance.router, prefix="/api")
 app.include_router(analytics.router, prefix="/api")
 app.include_router(ws.router)

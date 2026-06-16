@@ -1,4 +1,5 @@
 import math
+from datetime import datetime, timezone
 from app.repositories.base import MongoRepository, now_utc
 
 
@@ -17,7 +18,8 @@ class BacktestingService:
             target = float(decision["take_profit_1"])
             stop = float(decision["stop_loss"])
             side = decision["signal_type"]
-            future = [c for c in ordered if str(c["timestamp"]) > str(signal.get("created_at", ""))]
+            signal_time = _parse_time(signal.get("created_at"))
+            future = [c for c in ordered if signal_time and _parse_time(c.get("timestamp")) and _parse_time(c.get("timestamp")) > signal_time]
             exit_price = entry
             outcome = "OPEN"
             for candle in future:
@@ -61,3 +63,14 @@ class BacktestingService:
         variance = sum((value - avg) ** 2 for value in returns) / (len(returns) - 1)
         stdev = math.sqrt(variance)
         return round(avg / stdev, 2) if stdev else 0
+
+
+def _parse_time(value) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc)
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return None

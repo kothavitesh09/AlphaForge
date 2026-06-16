@@ -1,13 +1,16 @@
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from bson import ObjectId
 from app.core.config import SUPPORTED_INTERVALS, SUPPORTED_SYMBOLS
 from app.services.indicators import calculate_indicators
 from app.repositories.base import MongoRepository, now_utc
 from app.services.market_data import MarketDataClient
+from app.services.performance_engine import PerformanceEngine
 from app.services.prediction import PredictionService
 from app.services.sentiment import SentimentService
 from app.services.signals import SignalService
+from app.services.trade_lifecycle import TradeLifecycleEngine
 
 
 logger = logging.getLogger(__name__)
@@ -72,29 +75,61 @@ class PredictionPipelineService:
         self,
         symbols: list[str] | None = None,
         timeframes: list[str] | None = None,
+        refresh_rankings: bool = True,
     ) -> dict:
+        run_started = now_utc()
         symbols = [symbol.upper() for symbol in (symbols or list(SUPPORTED_SYMBOLS)) if symbol.upper() in SUPPORTED_SYMBOLS]
         timeframes = _normalize_timeframes(timeframes)
-        created = 0
+        generated = 0
+        inserted = 0
+        updated = 0
         skipped: list[dict] = []
         records: list[dict] = []
         for symbol in symbols:
             for timeframe in timeframes:
                 candles = await self._stored_candles(symbol, timeframe, limit=500)
-                if len(candles) < 1:
+                if len(candles) < 2:
                     skipped.append({"symbol": symbol, "timeframe": timeframe, "reason": "not_enough_candles", "candles": len(candles)})
                     continue
                 record = await self._prediction_record(symbol, timeframe, candles)
                 _validate_prediction_record(record)
-                await self.db.predictions.update_one(
+                result = await self.db.predictions.update_one(
                     {"symbol": symbol, "timeframe": timeframe, "source_timestamp": record["source_timestamp"]},
                     {"$set": record, "$setOnInsert": {"created_at": now_utc()}},
                     upsert=True,
                 )
-                created += 1
+                if result.upserted_id:
+                    inserted += 1
+                else:
+                    updated += 1
+                saved = await self.db.predictions.find_one({"symbol": symbol, "timeframe": timeframe, "source_timestamp": record["source_timestamp"]})
+                if saved:
+                    await PerformanceEngine(self.db).ensure_prediction_validation(saved)
+                generated += 1
                 records.append(record)
                 logger.info("Prediction Created symbol=%s timeframe=%s direction=%s confidence=%s", symbol, timeframe, record["direction"], record["confidence"])
-        return {"created": created, "skipped": skipped, "records": records}
+        stale = await self.cleanup_stale_predictions()
+        diagnostics = await self._store_generation_diagnostics(run_started, generated, skipped, inserted, updated, stale)
+        ranking_refresh: dict[str, Any] | None = None
+        if refresh_rankings and generated:
+            try:
+                from app.services.intelligence import IntelligenceService
+
+                ranking_refresh = await IntelligenceService(self.db).refresh_all(symbols)
+            except Exception as exc:
+                logger.warning("Opportunity ranking refresh failed after prediction generation: %s", exc)
+        return {
+            "created": generated,
+            "generated": generated,
+            "inserted": inserted,
+            "updated": updated,
+            "skipped_count": len(skipped),
+            "skipped": skipped,
+            "stale_marked": stale,
+            "diagnostics": diagnostics,
+            "ranking_refresh": ranking_refresh,
+            "records": records,
+        }
 
     async def generate_signals(self, symbols: list[str] | None = None) -> dict:
         symbols = [symbol.upper() for symbol in (symbols or list(SUPPORTED_SYMBOLS)) if symbol.upper() in SUPPORTED_SYMBOLS]
@@ -143,18 +178,25 @@ class PredictionPipelineService:
             actual = _actual_direction(start_price, end_price)
             expected = str(prediction.get("direction", "")).upper()
             correct = expected == actual
+            predicted_price = prediction.get("predicted_price")
+            price_error = _price_error(predicted_price, end_price)
+            source_type = "bootstrap" if prediction.get("bootstrap_evaluation") else "live"
             result = {
                 "prediction_id": str(prediction["_id"]),
                 "symbol": symbol,
                 "timeframe": timeframe,
+                "source_type": source_type,
                 "predicted": expected,
                 "actual": actual,
                 "correct": correct,
                 "confidence": float(prediction.get("confidence", 0)),
+                "predicted_price": predicted_price,
                 "source_timestamp": source_timestamp,
                 "resolved_timestamp": result_candle.get("timestamp"),
                 "start_price": start_price,
                 "end_price": end_price,
+                "absolute_error": price_error["absolute_error"],
+                "absolute_percentage_error": price_error["absolute_percentage_error"],
                 "return_percent": round(((end_price / start_price) - 1) * 100, 4) if start_price else 0,
                 "resolved_at": now_utc(),
             }
@@ -193,7 +235,7 @@ class PredictionPipelineService:
                     continue
                 for index in candidates[-samples_per_pair:]:
                     history = candles[: index + 1]
-                    record = await self._prediction_record(symbol, timeframe, history)
+                    record = await self._prediction_record(symbol, timeframe, history, live=False)
                     _validate_prediction_record(record)
                     record["bootstrap_evaluation"] = True
                     await self.db.predictions.update_one(
@@ -201,54 +243,76 @@ class PredictionPipelineService:
                         {"$set": record, "$setOnInsert": {"created_at": now_utc()}},
                         upsert=True,
                     )
+                    saved = await self.db.predictions.find_one({"symbol": symbol, "timeframe": timeframe, "source_timestamp": record["source_timestamp"]})
+                    if saved:
+                        await PerformanceEngine(self.db).ensure_prediction_validation(saved)
                     created += 1
                     logger.info("Prediction Created symbol=%s timeframe=%s direction=%s confidence=%s", symbol, timeframe, record["direction"], record["confidence"])
         return {"created": created, "skipped": skipped}
 
     async def update_accuracy_stats(self) -> dict:
         rows = [row async for row in self.db.prediction_results.find({}).sort([("resolved_at", -1)]).limit(10000)]
+        rows = await self._hydrate_result_metrics(rows)
+        summary = await self._store_accuracy_summary(rows, "all", "all")
+        for source_type in ("live", "bootstrap"):
+            await self._store_accuracy_summary([row for row in rows if row.get("source_type", "live") == source_type], "all", source_type)
+        for timeframe in PREDICTION_TIMEFRAMES:
+            scoped = [row for row in rows if normalize_timeframe(row.get("timeframe"), default=None) == timeframe]
+            await self._store_accuracy_summary(scoped, timeframe, "all")
+            for source_type in ("live", "bootstrap"):
+                await self._store_accuracy_summary([row for row in scoped if row.get("source_type", "live") == source_type], timeframe, source_type)
+        snapshots = self._accuracy_snapshots(rows)
+        if snapshots:
+            await self.db.accuracy_stats.insert_many(snapshots)
+        logger.info("Accuracy Updated total=%s correct=%s accuracy=%s", summary["total_predictions"], summary["correct_predictions"], summary["accuracy_percent"])
+        return summary
+
+    async def _store_accuracy_summary(self, rows: list[dict], timeframe: str, source_type: str) -> dict:
         total = len(rows)
         correct = len([row for row in rows if row.get("correct")])
         avg_confidence = round(sum(float(row.get("confidence", 0)) for row in rows) / total, 2) if total else 0
+        abs_errors = [float(row.get("absolute_error", 0)) for row in rows if row.get("absolute_error") is not None]
+        ape = [float(row.get("absolute_percentage_error", 0)) for row in rows if row.get("absolute_percentage_error") is not None]
+        squared = [value * value for value in abs_errors]
         summary = {
-            "timeframe": "all",
+            "timeframe": timeframe,
+            "source_type": source_type,
             "total_predictions": total,
             "correct_predictions": correct,
             "incorrect_predictions": total - correct,
             "accuracy_percent": round(correct / total * 100, 2) if total else 0,
             "win_rate": round(correct / total * 100, 2) if total else 0,
             "average_confidence": avg_confidence,
+            "mae": round(sum(abs_errors) / len(abs_errors), 6) if abs_errors else 0,
+            "mape": round(sum(ape) / len(ape), 6) if ape else 0,
+            "rmse": round((sum(squared) / len(squared)) ** 0.5, 6) if squared else 0,
             "created_at": now_utc(),
         }
         await self.db.accuracy_stats.update_one(
-            {"timeframe": "all"},
+            {"timeframe": timeframe, "source_type": source_type, "scope": "summary"},
             {"$set": summary, "$setOnInsert": {"first_created_at": now_utc()}},
             upsert=True,
         )
-        for timeframe in PREDICTION_TIMEFRAMES:
-            scoped = [row for row in rows if normalize_timeframe(row.get("timeframe"), default=None) == timeframe]
-            scoped_total = len(scoped)
-            scoped_correct = len([row for row in scoped if row.get("correct")])
-            scoped_summary = {
-                "timeframe": timeframe,
-                "total_predictions": scoped_total,
-                "correct_predictions": scoped_correct,
-                "incorrect_predictions": scoped_total - scoped_correct,
-                "accuracy_percent": round(scoped_correct / scoped_total * 100, 2) if scoped_total else 0,
-                "win_rate": round(scoped_correct / scoped_total * 100, 2) if scoped_total else 0,
-                "average_confidence": round(sum(float(row.get("confidence", 0)) for row in scoped) / scoped_total, 2) if scoped_total else 0,
-                "created_at": now_utc(),
-            }
-            await self.db.accuracy_stats.update_one(
-                {"timeframe": timeframe},
-                {"$set": scoped_summary, "$setOnInsert": {"first_created_at": now_utc()}},
-                upsert=True,
-            )
-        snapshots = self._accuracy_snapshots(rows)
-        if snapshots:
-            await self.db.accuracy_stats.insert_many(snapshots)
-        logger.info("Accuracy Updated total=%s correct=%s accuracy=%s", total, correct, summary["accuracy_percent"])
         return summary
+
+    async def _hydrate_result_metrics(self, rows: list[dict]) -> list[dict]:
+        hydrated = []
+        for row in rows:
+            update = {}
+            if row.get("source_type") is None or row.get("absolute_error") is None:
+                prediction = await _prediction_for_result(self.db, row)
+                if prediction:
+                    if row.get("source_type") is None:
+                        update["source_type"] = "bootstrap" if prediction.get("bootstrap_evaluation") else "live"
+                    if row.get("absolute_error") is None:
+                        price_error = _price_error(prediction.get("predicted_price"), float(row.get("end_price", 0) or 0))
+                        update.update(price_error)
+                        update["predicted_price"] = prediction.get("predicted_price")
+            if update:
+                await self.db.prediction_results.update_one({"_id": row["_id"]}, {"$set": update})
+                row.update(update)
+            hydrated.append(row)
+        return hydrated
 
     def _accuracy_snapshots(self, rows: list[dict]) -> list[dict]:
         snapshots = []
@@ -269,6 +333,7 @@ class PredictionPipelineService:
                     "scope": "rolling",
                     "symbol": symbol,
                     "timeframe": timeframe,
+                    "source_type": "all",
                     "window": window,
                     "sample_size": total,
                     "total_predictions": total,
@@ -302,9 +367,13 @@ class PredictionPipelineService:
                 break
         return best_interval, best_rows
 
-    async def _prediction_record(self, symbol: str, timeframe: str, candles: list[dict]) -> dict:
+    async def _prediction_record(self, symbol: str, timeframe: str, candles: list[dict], live: bool = True) -> dict:
+        return await self._build_prediction_record(symbol, timeframe, candles, live=live)
+
+    async def _build_prediction_record(self, symbol: str, timeframe: str, candles: list[dict], live: bool) -> dict:
         timeframe = normalize_timeframe(timeframe) or "1h"
         latest = candles[-1]
+        generated_at = now_utc()
         try:
             model = self.predictor.train_predict(candles, {"bids": [], "asks": []}, {"score": 0})
             probabilities = {
@@ -322,10 +391,23 @@ class PredictionPipelineService:
             validation_accuracy = 0
         direction = max(probabilities, key=probabilities.get).upper()
         source_close = float(latest.get("close") or 0)
-        predicted_change_pct = _predicted_change_percent(direction, expected_move)
+        predicted_change_pct = _predicted_change_percent(direction, expected_move, probabilities, candles)
         predicted_price = _predicted_price(source_close, predicted_change_pct)
-        target_timestamp = _target_timestamp(timeframe, latest["timestamp"])
+        target_base = generated_at if live else latest["timestamp"]
+        target_timestamp = _target_timestamp(timeframe, target_base)
         confidence = max(probabilities.values())
+        lifecycle = await TradeLifecycleEngine(self.db).build(
+            symbol=symbol,
+            timeframe=timeframe,
+            candles=candles,
+            probabilities=probabilities,
+            model_confidence=confidence,
+            predicted_return_pct=predicted_change_pct,
+            generated_at=generated_at,
+        )
+        predicted_change_pct = float(lifecycle.get("predicted_return_pct", predicted_change_pct or 0))
+        predicted_price = lifecycle.get("predicted_price") or predicted_price
+        direction = str(lifecycle.get("predicted_direction") or direction).upper()
         return {
             "symbol": symbol,
             "timeframe": timeframe,
@@ -340,15 +422,118 @@ class PredictionPipelineService:
             "current_price": source_close,
             "predicted_price": predicted_price,
             "predicted_change_pct": predicted_change_pct,
-            "prediction_timestamp": latest["timestamp"],
+            "prediction_timestamp": generated_at,
             "target_timestamp": target_timestamp,
             "expected_move": expected_move,
-            "opportunity_score": _opportunity_score(predicted_change_pct, confidence),
+            "opportunity_score": lifecycle.get("opportunity_score_v2") or _opportunity_score(predicted_change_pct, confidence),
             "validation_accuracy": validation_accuracy,
             "model_warning": warning,
+            **lifecycle,
+            "stale": False,
             "evaluated": False,
             "updated_at": now_utc(),
         }
+
+    async def cleanup_stale_predictions(self) -> int:
+        now_iso = _iso(now_utc())
+        result = await self.db.predictions.update_many(
+            {
+                "bootstrap_evaluation": {"$ne": True},
+                "target_timestamp": {"$lte": now_iso},
+                "stale": {"$ne": True},
+            },
+            {"$set": {"stale": True, "stale_at": now_utc()}},
+        )
+        return int(result.modified_count or 0)
+
+    async def diagnostics(self) -> dict:
+        last_run = await self.db.job_runs.find_one({"job": "prediction_generation"}, sort=[("started_at", -1)])
+        latest_by_timeframe = await self._latest_prediction_timestamps({"timeframe": "$timeframe"})
+        latest_by_coin = await self._latest_prediction_timestamps({"symbol": "$symbol"})
+        latest_by_pair = await self._latest_prediction_timestamps({"symbol": "$symbol", "timeframe": "$timeframe"})
+        return {
+            "last_prediction_generation_time": last_run.get("started_at") if last_run else None,
+            "last_prediction_generation_finished_at": last_run.get("finished_at") if last_run else None,
+            "last_predictions_generated_count": (last_run.get("metadata") or {}).get("generated", 0) if last_run else 0,
+            "last_predictions_skipped_count": (last_run.get("metadata") or {}).get("skipped", 0) if last_run else 0,
+            "latest_prediction_timestamp_per_timeframe": latest_by_timeframe,
+            "latest_prediction_timestamp_per_coin": latest_by_coin,
+            "latest_prediction_timestamp_per_coin_timeframe": latest_by_pair,
+        }
+
+    async def _store_generation_diagnostics(
+        self,
+        started_at: datetime,
+        generated: int,
+        skipped: list[dict],
+        inserted: int,
+        updated: int,
+        stale: int,
+    ) -> dict:
+        finished_at = now_utc()
+        duration_ms = round((finished_at - started_at).total_seconds() * 1000, 2)
+        metadata = {
+            "generated": generated,
+            "skipped": len(skipped),
+            "inserted": inserted,
+            "updated": updated,
+            "stale_marked": stale,
+            "duration_ms": duration_ms,
+            "latest_by_timeframe": await self._latest_prediction_timestamps({"timeframe": "$timeframe"}),
+            "latest_by_coin": await self._latest_prediction_timestamps({"symbol": "$symbol"}),
+        }
+        await self.db.job_runs.insert_one(
+            {
+                "job": "prediction_generation",
+                "status": "completed",
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "duration_ms": duration_ms,
+                "metadata": metadata,
+                "created_at": finished_at,
+            }
+        )
+        await self.db.system_health.update_one(
+            {"component": "prediction_generation"},
+            {
+                "$set": {
+                    "component": "prediction_generation",
+                    "status": "healthy",
+                    "last_latency_ms": metadata.get("duration_ms"),
+                    "last_error": None,
+                    "updated_at": finished_at,
+                    "metadata": metadata,
+                },
+                "$setOnInsert": {"created_at": finished_at},
+            },
+            upsert=True,
+        )
+        return metadata
+
+    async def _latest_prediction_timestamps(self, group_id: dict) -> list[dict]:
+        rows = []
+        async for row in self.db.predictions.aggregate(
+            [
+                {"$match": {"bootstrap_evaluation": {"$ne": True}, "stale": {"$ne": True}, "target_timestamp": {"$gt": _iso(now_utc())}}},
+                {
+                    "$group": {
+                        "_id": group_id,
+                        "latest_prediction_timestamp": {"$max": "$prediction_timestamp"},
+                        "latest_target_timestamp": {"$max": "$target_timestamp"},
+                        "count": {"$sum": 1},
+                    }
+                },
+                {"$sort": {"latest_prediction_timestamp": -1}},
+            ]
+        ):
+            item = {"latest_prediction_timestamp": row.get("latest_prediction_timestamp"), "latest_target_timestamp": row.get("latest_target_timestamp"), "count": row.get("count", 0)}
+            key = row.get("_id")
+            if isinstance(key, dict):
+                item.update(key)
+            else:
+                item["key"] = key
+            rows.append(item)
+        return rows
 
 
 def _actual_direction(start_price: float, end_price: float) -> str:
@@ -403,20 +588,28 @@ def _expected_move_from_candles(candles: list[dict]) -> str | None:
     return PredictionService().expected_move(float(latest["atr"]), float(latest["close"]), float(latest["trend_strength"]))
 
 
-def _predicted_change_percent(direction: str, expected_move: Any) -> float | None:
-    if direction == "SIDEWAYS":
-        return 0.0
+def _predicted_change_percent(direction: str, expected_move: Any, probabilities: dict | None = None, candles: list[dict] | None = None) -> float | None:
     if not isinstance(expected_move, str):
-        return None
+        expected_move = None
     values = []
-    for part in expected_move.replace("%", "").replace("to", " ").split():
-        try:
-            values.append(abs(float(part)))
-        except ValueError:
-            continue
-    if not values:
+    if isinstance(expected_move, str):
+        for part in expected_move.replace("%", "").replace("to", " ").split():
+            try:
+                values.append(abs(float(part)))
+            except ValueError:
+                continue
+    magnitude = round(sum(values) / len(values), 4) if values else _recent_move_magnitude(candles or [])
+    if not magnitude:
         return None
-    magnitude = round(sum(values) / len(values), 4)
+    if direction == "SIDEWAYS":
+        up = float((probabilities or {}).get("up") or 0)
+        down = float((probabilities or {}).get("down") or 0)
+        bias = (up - down) / 100
+        if abs(bias) < 0.05:
+            bias = _recent_direction_bias(candles or [])
+        if abs(bias) < 0.02:
+            bias = 0.02
+        return round(max(-magnitude, min(magnitude, magnitude * bias)), 4)
     return -magnitude if direction == "DOWN" else magnitude
 
 
@@ -426,10 +619,52 @@ def _predicted_price(source_close: float, predicted_change_pct: float | None) ->
     return round(source_close * (1 + predicted_change_pct / 100), 8)
 
 
+def _price_error(predicted_price: Any, actual_price: float) -> dict:
+    if predicted_price is None or actual_price <= 0:
+        return {"absolute_error": None, "absolute_percentage_error": None}
+    absolute_error = abs(float(predicted_price) - actual_price)
+    return {
+        "absolute_error": round(absolute_error, 8),
+        "absolute_percentage_error": round(absolute_error / actual_price * 100, 8),
+    }
+
+
+async def _prediction_for_result(db, result: dict) -> dict | None:
+    prediction_id = result.get("prediction_id")
+    if not prediction_id:
+        return None
+    try:
+        return await db.predictions.find_one({"_id": ObjectId(str(prediction_id))})
+    except Exception:
+        return None
+
+
 def _opportunity_score(predicted_change_pct: float | None, confidence: float) -> float:
     if predicted_change_pct is None:
         return round(max(0, min(100, confidence * 0.4)), 2)
     return round(max(0, min(100, abs(predicted_change_pct) * 12 + confidence * 0.55)), 2)
+
+
+def _recent_move_magnitude(candles: list[dict]) -> float | None:
+    if len(candles) < 2:
+        return None
+    latest = float(candles[-1].get("close") or 0)
+    previous = float(candles[-2].get("close") or 0)
+    if latest <= 0 or previous <= 0:
+        return None
+    return round(max(0.05, min(3.0, abs((latest / previous - 1) * 100))), 4)
+
+
+def _recent_direction_bias(candles: list[dict]) -> float:
+    if len(candles) < 2:
+        return 0.0
+    latest = float(candles[-1].get("close") or 0)
+    previous = float(candles[-2].get("close") or 0)
+    if latest > previous:
+        return 0.2
+    if latest < previous:
+        return -0.2
+    return 0.0
 
 
 def _candle_ref(document: dict | None) -> dict | None:

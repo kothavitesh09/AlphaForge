@@ -103,8 +103,6 @@ async def backtest_start(payload: dict | None = None):
     interval = str(payload.get("interval") or payload.get("timeframe") or "1h")
     cursor = db.market_data.find({"symbol": symbol, "interval": interval}).sort([("timestamp", 1)]).limit(5000)
     candles = [item async for item in cursor]
-    if not candles:
-        candles = await MarketDataClient().candles(symbol, interval)
     signals = await MongoRepository(db, "signals").find_many({"symbol": symbol}, limit=1000, sort=[("created_at", -1)])
     return await BacktestingService(db).run(symbol, candles, signals)
 
@@ -118,7 +116,7 @@ async def backtest_results(symbol: str | None = None):
 @router.post("/backtest/{symbol}")
 async def backtest(symbol: str, timeframe: str = "1h"):
     db = get_database()
-    candles = await MarketDataClient().candles(symbol, timeframe)
+    candles = [item async for item in db.market_data.find({"symbol": symbol.upper(), "interval": timeframe}).sort([("timestamp", 1)]).limit(5000)]
     signals = await MongoRepository(db, "signals").find_many({"symbol": symbol.upper()}, limit=500, sort=[("created_at", -1)])
     return await BacktestingService(db).run(symbol, candles, signals)
 

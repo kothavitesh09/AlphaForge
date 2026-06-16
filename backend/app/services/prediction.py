@@ -14,18 +14,20 @@ class PredictionService:
     def feature_columns(self) -> list[str]:
         return ["rsi", "macd", "volume_ratio", "trend_strength", "volatility", "atr", "order_book_imbalance", "sentiment_score"]
 
-    def labels(self, df):
-        future_return = df["close"].shift(-12) / df["close"] - 1
-        return np.select([future_return < -0.03, future_return > 0.03], [0, 2], default=1)
+    def labels(self, df, horizon_steps: int = 1):
+        future_return = df["close"].shift(-horizon_steps) / df["close"] - 1
+        labels = np.select([future_return < -0.003, future_return > 0.003], [0, 2], default=1).astype(float)
+        labels[future_return.isna().to_numpy()] = np.nan
+        return labels
 
-    def train_predict(self, candles: list[dict], order_book: dict, sentiment: dict) -> dict:
+    def train_predict(self, candles: list[dict], order_book: dict, sentiment: dict, horizon_steps: int = 1) -> dict:
         df = calculate_indicators(candles)
         if len(df) < 60:
             raise ValueError("At least 60 candles are required for prediction")
         df["order_book_imbalance"] = order_book_imbalance(order_book)
         df["sentiment_score"] = float(sentiment.get("score", 0))
         features = df[self.feature_columns()].replace([np.inf, -np.inf], 0).fillna(0)
-        y = self.labels(df)
+        y = self.labels(df, horizon_steps=horizon_steps)
         valid = ~np.isnan(y)
         x_train, x_val, y_train, y_val = train_test_split(features[valid], y[valid], test_size=0.25, shuffle=False)
         if len(set(y_train.tolist())) < 2:

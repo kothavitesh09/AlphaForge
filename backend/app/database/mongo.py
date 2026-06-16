@@ -15,6 +15,21 @@ EXPECTED_COLLECTIONS = (
     "signals",
     "predictions",
     "prediction_results",
+    "prediction_validations",
+    "prediction_lifecycle_validations",
+    "prediction_reality_stats",
+    "opportunity_discovery",
+    "alpha_discovery",
+    "adaptive_learning_stats",
+    "dynamic_model_weights",
+    "alphaforge_scores",
+    "simulated_trades",
+    "performance_snapshots",
+    "opportunity_score_validations",
+    "confidence_calibration",
+    "model_tournament",
+    "allocation_recommendations",
+    "lifecycle_model_weights",
     "paper_trades",
     "portfolio",
     "portfolios",
@@ -103,6 +118,8 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await _ensure_index(db.signals, [("signal", 1), ("confidence", -1), ("created_at", -1)], name="signals_action_confidence_created_at")
     await _ensure_index(db.predictions, [("symbol", 1), ("created_at", -1)], name="predictions_symbol_created_at")
     await _ensure_index(db.predictions, [("timeframe", 1), ("created_at", -1)], name="predictions_timeframe_created_at")
+    await _ensure_index(db.predictions, [("symbol", 1), ("timeframe", 1), ("prediction_timestamp", -1)], name="predictions_symbol_timeframe_prediction_timestamp")
+    await _ensure_index(db.predictions, [("stale", 1), ("target_timestamp", 1)], name="predictions_stale_target")
     await _ensure_index(db.paper_trades, [("user_id", 1), ("created_at", -1)])
     await _ensure_index(db.paper_trades, [("symbol", 1), ("created_at", -1)], name="paper_trades_symbol_created_at")
     await _ensure_index(db.portfolios, [("user_id", 1)], unique=True)
@@ -110,6 +127,29 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await _ensure_index(db.market_sentiment, [("created_at", 1)])
     await _ensure_index(db.social_sentiment, [("symbol", 1), ("created_at", -1)])
     await _ensure_index(db.prediction_results, [("symbol", 1), ("resolved_at", -1)])
+    await _ensure_index(db.prediction_validations, [("prediction_id", 1)], unique=True, name="prediction_validation_prediction_id")
+    await _ensure_index(db.prediction_validations, [("source_type", 1), ("status", 1), ("target_timestamp", 1)], name="prediction_validation_source_status_target")
+    await _ensure_index(db.prediction_validations, [("symbol", 1), ("timeframe", 1), ("source_type", 1), ("target_timestamp", -1)], name="prediction_validation_symbol_timeframe_source_target")
+    await _ensure_index(db.prediction_lifecycle_validations, [("prediction_id", 1)], unique=True, name="prediction_lifecycle_prediction_id")
+    await _ensure_index(db.prediction_lifecycle_validations, [("status", 1), ("expected_pullback_time", 1)], name="prediction_lifecycle_status_pullback")
+    await _ensure_index(db.prediction_lifecycle_validations, [("status", 1), ("expected_peak_time", 1)], name="prediction_lifecycle_status_peak")
+    await _ensure_index(db.prediction_lifecycle_validations, [("symbol", 1), ("timeframe", 1), ("created_at", -1)], name="prediction_lifecycle_symbol_timeframe_created")
+    await _ensure_index(db.prediction_reality_stats, [("scope", 1), ("key", 1), ("created_at", -1)], name="prediction_reality_scope_key_created")
+    await _ensure_index(db.opportunity_discovery, [("scope", 1), ("created_at", -1)], name="opportunity_discovery_scope_created")
+    await _ensure_index(db.alpha_discovery, [("symbol", 1), ("created_at", -1)], name="alpha_discovery_symbol_created")
+    await _ensure_index(db.alpha_discovery, [("discovery_score", -1), ("alpha_score", -1)], name="alpha_discovery_scores")
+    await _ensure_index(db.adaptive_learning_stats, [("scope", 1), ("key", 1), ("created_at", -1)], name="adaptive_learning_scope_key_created")
+    await _ensure_index(db.dynamic_model_weights, [("scope", 1), ("created_at", -1)], name="dynamic_model_weights_scope_created")
+    await _ensure_index(db.alphaforge_scores, [("scope", 1), ("created_at", -1)], name="alphaforge_scores_scope_created")
+    await _ensure_index(db.simulated_trades, [("signal_id", 1)], unique=True, name="simulated_trade_signal_id")
+    await _ensure_index(db.simulated_trades, [("source_type", 1), ("status", 1), ("entry_time", -1)], name="simulated_trade_source_status_entry")
+    await _ensure_index(db.simulated_trades, [("symbol", 1), ("timeframe", 1), ("signal_type", 1), ("exit_time", -1)], name="simulated_trade_symbol_timeframe_signal_exit")
+    await _ensure_index(db.performance_snapshots, [("source_type", 1), ("scope", 1), ("window", 1), ("created_at", -1)], name="performance_snapshot_source_scope_window")
+    await _ensure_index(db.opportunity_score_validations, [("source_type", 1), ("bucket", 1), ("created_at", -1)], name="opportunity_score_validation_source_bucket")
+    await _ensure_index(db.confidence_calibration, [("source_type", 1), ("bucket", 1), ("created_at", -1)], name="confidence_calibration_source_bucket")
+    await _ensure_index(db.model_tournament, [("source_type", 1), ("model", 1), ("timeframe", 1), ("created_at", -1)], name="model_tournament_source_model_timeframe")
+    await _ensure_index(db.allocation_recommendations, [("created_at", -1)], name="allocation_recommendations_created_at")
+    await _ensure_index(db.lifecycle_model_weights, [("scope", 1), ("created_at", -1)], name="lifecycle_weights_scope_created")
     await _ensure_index(db.accuracy_stats, [("timeframe", 1), ("created_at", -1)])
     await _ensure_index(db.indicator_data, [("symbol", 1), ("interval", 1), ("timestamp", -1)], unique=True, name="indicator_symbol_interval_timestamp")
     await _ensure_index(db.indicator_data, [("symbol", 1), ("timeframe", 1), ("timestamp", -1)])

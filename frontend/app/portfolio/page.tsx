@@ -4,7 +4,9 @@ import { AuthRequired } from "@/components/AuthRequired";
 import { ErrorState, LoadingGrid } from "@/components/State";
 import { EmptyState, Metric, Panel, SectionTitle, formatInr } from "@/components/trading-ui";
 import { useApi } from "@/hooks/useApi";
+import { buildTerminalOpportunities, formatDate, signed } from "@/lib/intelligence";
 import { API } from "@/services/api";
+import { Prediction, Signal, Ticker } from "@/types";
 
 type Portfolio = {
   cash_balance: number;
@@ -35,11 +37,17 @@ export default function PortfolioPage() {
 
 function PortfolioContent() {
   const { data, loading, error } = useApi<Portfolio>(API.portfolio);
+  const predictions = useApi<Prediction[]>(API.predictions);
+  const signals = useApi<Signal[]>(API.signals);
+  const markets = useApi<Ticker[]>(API.markets);
+  const forecasts = useApi<Array<{ symbol: string; current_price: number; confidence: number; expected_return?: number; forecast_24h?: number; forecast_48h?: number; forecast_7d?: number; market_regime?: string }>>(API.forecasts);
   const positions = Object.entries(data?.positions || {});
+  const intelligence = buildTerminalOpportunities({ predictions: predictions.data, signals: signals.data, tickers: markets.data, forecasts: forecasts.data });
+  const intelligenceMap = new Map(intelligence.map((row) => [row.symbol, row]));
   return (
     <>
-      {loading && <LoadingGrid />}
-      {error && <ErrorState message={error} />}
+      {(loading || predictions.loading || signals.loading || markets.loading || forecasts.loading) && <LoadingGrid />}
+      {(error || predictions.error || signals.error || markets.error || forecasts.error) && <ErrorState message={error || predictions.error || signals.error || markets.error || forecasts.error || "Request failed"} />}
       {data && <div className="space-y-6">
         <div className="grid gap-4 md:grid-cols-4">
           <Metric label="Portfolio Value" value={formatInr(data.portfolio_value)} />
@@ -55,21 +63,26 @@ function PortfolioContent() {
             {positions.length > 0 && (
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[920px] text-left text-sm">
-                  <thead className="text-xs uppercase text-muted"><tr><th className="pb-3">Symbol</th><th className="pb-3">Side</th><th className="pb-3">Qty</th><th className="pb-3">Entry</th><th className="pb-3">Current</th><th className="pb-3">Target</th><th className="pb-3">Stop</th><th className="pb-3">PnL</th><th className="pb-3">Duration</th></tr></thead>
+                  <thead className="text-xs uppercase text-muted"><tr><th className="pb-3">Symbol</th><th className="pb-3">Side</th><th className="pb-3">Qty</th><th className="pb-3">Entry</th><th className="pb-3">Current</th><th className="pb-3">Future Price</th><th className="pb-3">Expected Return</th><th className="pb-3">Target Date</th><th className="pb-3">Risk</th><th className="pb-3">Action</th></tr></thead>
                   <tbody>
-                    {positions.map(([id, p]) => (
-                      <tr key={id} className="border-t border-line">
-                        <td className="py-3 font-medium">{p.symbol}</td>
-                        <td className={p.side?.toUpperCase() === "BUY" ? "text-buy" : "text-sell"}>{p.side}</td>
-                        <td>{p.quantity}</td>
-                        <td>{formatInr(p.entry_price)}</td>
-                        <td>{formatInr(p.current_price)}</td>
-                        <td>{formatInr(p.target)}</td>
-                        <td>{formatInr(p.stop_loss)}</td>
-                        <td className={p.unrealized_pnl >= 0 ? "text-buy" : "text-sell"}>{formatInr(p.unrealized_pnl)}</td>
-                        <td>{p.duration}</td>
-                      </tr>
-                    ))}
+                    {positions.map(([id, p]) => {
+                      const intel = intelligenceMap.get(p.symbol);
+                      const expectedReturn = intel?.expectedReturn ?? (p.current_price > 0 ? (p.target / p.current_price - 1) * 100 : 0);
+                      return (
+                        <tr key={id} className="border-t border-line">
+                          <td className="py-3 font-medium">{p.symbol}</td>
+                          <td className={p.side?.toUpperCase() === "BUY" ? "text-buy" : "text-sell"}>{p.side}</td>
+                          <td>{p.quantity}</td>
+                          <td>{formatInr(p.entry_price)}</td>
+                          <td>{formatInr(p.current_price)}</td>
+                          <td>{formatInr(intel?.expectedPrice || p.target)}</td>
+                          <td className={expectedReturn >= 0 ? "text-buy" : "text-sell"}>{signed(expectedReturn)}</td>
+                          <td>{formatDate(intel?.expectedDate)}</td>
+                          <td>{Math.round(intel?.score || 0)}</td>
+                          <td className="font-semibold">{recommendedAction(expectedReturn, p.unrealized_pnl)}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -101,4 +114,12 @@ function PortfolioContent() {
       </div>}
     </>
   );
+}
+
+function recommendedAction(expectedReturn: number, pnl: number) {
+  if (expectedReturn >= 5 && pnl >= 0) return "BUY MORE";
+  if (expectedReturn >= 1) return "HOLD";
+  if (expectedReturn < -1 && pnl > 0) return "TAKE PROFIT";
+  if (expectedReturn < -1) return "EXIT";
+  return "HOLD";
 }

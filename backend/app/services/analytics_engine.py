@@ -223,7 +223,11 @@ class SignalValidationService:
             exists = await self.db.signal_validations.find_one({"signal_id": signal_id})
             await self.db.signal_validations.update_one({"signal_id": signal_id}, {"$set": record}, upsert=True)
             return {"stored": True, "created": exists is None, **record}
-        candles = [row async for row in self.db.market_data.find({"symbol": symbol, "interval": "1h"}).sort([("timestamp", 1)]).limit(10000)]
+        created_after = _iso_time(signal.get("created_at"))
+        candle_query = {"symbol": symbol, "interval": "1h"}
+        if created_after:
+            candle_query["timestamp"] = {"$gt": created_after}
+        candles = [row async for row in self.db.market_data.find(candle_query).sort([("timestamp", 1)]).limit(10000)]
         outcome = "OPEN"
         exit_price = entry
         for candle in candles:
@@ -266,3 +270,16 @@ class SignalValidationService:
         score += 15 if outcome == "WIN" else -15 if outcome == "LOSS" else 0
         score += max(-10, min(10, return_percent * 2))
         return round(max(0, min(100, score)), 2)
+
+
+def _iso_time(value) -> str | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")

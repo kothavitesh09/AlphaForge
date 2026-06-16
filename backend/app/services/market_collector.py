@@ -11,6 +11,7 @@ from app.services.market_data import MarketDataClient
 
 
 logger = logging.getLogger(__name__)
+prediction_refresh_lock = asyncio.Lock()
 
 
 @dataclass
@@ -63,6 +64,8 @@ class MarketDataCollector:
                     logger.exception("Collector Exception symbol=%s interval=%s error=%s", symbol, interval, exc)
                     continue
         collector_state.collection_latency_ms = round((perf_counter() - started_at) * 1000, 2)
+        if inserted > 0:
+            await self._refresh_predictions_after_market_update()
         return inserted
 
     async def run_forever(self, stop_event: asyncio.Event, interval_seconds: int = 60) -> None:
@@ -107,6 +110,32 @@ class MarketDataCollector:
             upsert=True,
         )
         return result.upserted_id is not None
+
+    async def _refresh_predictions_after_market_update(self) -> None:
+        if prediction_refresh_lock.locked():
+            logger.info("Prediction refresh skipped because previous refresh is still running")
+            return
+        async with prediction_refresh_lock:
+            try:
+                from app.services.analytics_engine import AnalyticsEngine, MarketSentimentEngine, SignalValidationService
+                from app.services.performance_engine import PerformanceEngine
+                from app.services.prediction_pipeline import PredictionPipelineService
+
+                pipeline = PredictionPipelineService(self.db)
+                prediction_result = await pipeline.generate_predictions()
+                await pipeline.evaluate_predictions()
+                await SignalValidationService(self.db).validate_all()
+                await PerformanceEngine(self.db).refresh()
+                await MarketSentimentEngine(self.db).update()
+                await AnalyticsEngine(self.db).update()
+                logger.info(
+                    "Prediction refresh after market update generated=%s skipped=%s",
+                    prediction_result.get("generated"),
+                    prediction_result.get("skipped_count"),
+                )
+            except Exception as exc:
+                collector_state.last_error = str(exc)
+                logger.exception("Prediction refresh after market update failed error=%s", exc)
 
 
 async def collector_health(db: AsyncIOMotorDatabase) -> dict[str, Any]:

@@ -8,6 +8,7 @@ from app.services.market_data import MarketDataClient
 from app.services.intelligence import IntelligenceService
 from app.services.ml_engine import MLTrainingService
 from app.services.notifications import TelegramNotifier
+from app.services.performance_engine import PerformanceEngine
 from app.services.prediction_pipeline import PredictionPipelineService
 from app.services.sentiment import SentimentService
 from app.services.signals import SignalService
@@ -51,6 +52,7 @@ async def generate_predictions_and_accuracy() -> None:
     await pipeline.generate_predictions()
     await pipeline.evaluate_predictions()
     await SignalValidationService(db).validate_all()
+    await PerformanceEngine(db).refresh()
     await MarketSentimentEngine(db).update()
     await AnalyticsEngine(db).update()
 
@@ -63,15 +65,34 @@ async def retrain_ml_models() -> None:
     await MLTrainingService(get_database()).run()
 
 
+async def refresh_lifecycle_model_weights() -> None:
+    engine = PerformanceEngine(get_database())
+    await engine.update_lifecycle_model_weights()
+    await engine.update_dynamic_model_weights()
+    await engine.store_alphaforge_score()
+
+
+async def validate_lifecycle_predictions() -> None:
+    db = get_database()
+    engine = PerformanceEngine(db)
+    await engine.evaluate_lifecycle_validations()
+    await engine.store_prediction_reality_stats()
+    await engine.store_adaptive_learning_stats()
+    await engine.store_alphaforge_score()
+    await engine.store_opportunity_discovery()
+
+
 def start_scheduler() -> None:
     start_market_collector()
     if scheduler.running:
         return
     scheduler.add_job(collect_and_signal, "interval", minutes=30, id="signal_generation", replace_existing=True, next_run_time=None)
     scheduler.add_job(generate_predictions_and_accuracy, "interval", minutes=15, id="prediction_generation", replace_existing=True, next_run_time=None)
+    scheduler.add_job(validate_lifecycle_predictions, "interval", minutes=5, id="continuous_lifecycle_validation", replace_existing=True, next_run_time=None)
     scheduler.add_job(refresh_intelligence_layer, "interval", minutes=30, id="forecast_intelligence", replace_existing=True, next_run_time=None)
     scheduler.add_job(retrain_ml_models, "cron", hour=2, id="daily_ml_retraining", replace_existing=True, next_run_time=None)
     scheduler.add_job(retrain_ml_models, "cron", day_of_week="sun", hour=3, id="weekly_ml_retraining", replace_existing=True, next_run_time=None)
+    scheduler.add_job(refresh_lifecycle_model_weights, "cron", day_of_week="sun", hour=4, id="weekly_lifecycle_weighting", replace_existing=True, next_run_time=None)
     scheduler.start()
 
 

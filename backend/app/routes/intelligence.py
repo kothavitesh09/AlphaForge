@@ -42,7 +42,11 @@ async def market_regimes():
 
 @router.get("/opportunities")
 async def opportunities():
-    return await MongoRepository(get_database(), "opportunities").find_many(limit=200, sort=[("rank", 1), ("alpha_score", -1)])
+    db = get_database()
+    discovery = await db.opportunity_discovery.find_one({"scope": "latest"}, sort=[("created_at", -1)])
+    if discovery and discovery.get("visible_opportunities"):
+        return discovery.get("visible_opportunities")
+    return await MongoRepository(db, "opportunities").find_many({"symbol": {"$exists": True, "$nin": ["", None]}}, limit=200, sort=[("rank", 1), ("alpha_score", -1)])
 
 
 @router.get("/ml/monitoring")

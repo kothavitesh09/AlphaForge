@@ -12,6 +12,8 @@ export const API = {
   alphaScores: `${API_ROOT}/alpha-scores`,
   marketRegimes: `${API_ROOT}/market-regimes`,
   analytics: `${API_ROOT}/analytics/stats`,
+  accuracy: `${API_ROOT}/accuracy`,
+  performance: `${API_ROOT}/performance`,
   mlAnalytics: `${API_ROOT}/ml/analytics`,
   mlMonitoring: `${API_ROOT}/ml/monitoring`,
   portfolio: `${API_ROOT}/paper-trade/portfolio`,

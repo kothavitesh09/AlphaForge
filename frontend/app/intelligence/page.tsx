@@ -1,163 +1,228 @@
 "use client";
+import { useMemo, useState } from "react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import { Shell } from "@/components/Shell";
 import { ErrorState, LoadingGrid } from "@/components/State";
-import { EmptyState, Metric, Panel, SectionTitle, StatusLine, formatInr } from "@/components/trading-ui";
+import { ActionPill, EmptyState, Panel, SectionTitle, StatusLine, formatInr } from "@/components/trading-ui";
 import { useApi } from "@/hooks/useApi";
+import {
+  CORE_TIMEFRAMES,
+  CoreTimeframe,
+  OpportunityRow,
+  buildTerminalOpportunities,
+  confidenceLabel,
+  displayTimeframe,
+  firstNumber,
+  formatDate,
+  signed
+} from "@/lib/intelligence";
 import { API } from "@/services/api";
-
-type Opportunity = {
-  symbol: string;
-  alpha_score: number;
-  expected_return: number;
-  confidence: number;
-  risk_score: number;
-  rank: number;
-  market_regime?: string;
-};
+import { Prediction, Signal, Ticker } from "@/types";
 
 type Forecast = {
   symbol: string;
   current_price: number;
-  forecast_48h: number;
+  forecast_24h?: number;
+  forecast_48h?: number;
+  forecast_7d?: number;
   confidence: number;
-  expected_return: number;
+  alpha_score?: number;
+  market_regime?: string;
+  expected_return?: number;
 };
 
-type Intelligence = {
-  top_opportunity?: Opportunity | null;
-  top_opportunities: Opportunity[];
-  market_regime_overview: { symbol: string; regime: string; confidence: number }[];
-  highest_confidence_forecast?: Forecast | null;
-  highest_expected_return?: Forecast | null;
-  most_accurate_model?: { model: string; timeframe: string; metrics?: { accuracy?: number; f1?: number } } | null;
-  best_performing_coin?: { symbol: string; accuracy: number; average_return: number } | null;
-  worst_performing_coin?: { symbol: string; accuracy: number; average_return: number } | null;
-  live_alpha_rankings: Opportunity[];
+type Analytics = {
+  tables?: {
+    best_symbols?: { symbol: string; accuracy: number; total: number }[];
+    worst_symbols?: { symbol: string; accuracy: number; total: number }[];
+  };
 };
 
 export default function IntelligencePage() {
-  const { data, loading, error } = useApi<Intelligence>(API.intelligence);
-  const top = data?.top_opportunity;
+  const predictions = useApi<Prediction[]>(API.predictions);
+  const signals = useApi<Signal[]>(API.signals);
+  const markets = useApi<Ticker[]>(API.markets);
+  const forecasts = useApi<Forecast[]>(API.forecasts);
+  const analytics = useApi<Analytics>(API.analytics);
+  const loading = predictions.loading || signals.loading || markets.loading || forecasts.loading || analytics.loading;
+  const error = predictions.error || signals.error || markets.error || forecasts.error || analytics.error;
+  const accuracyBySymbol = useMemo(() => {
+    const rows = [...(analytics.data?.tables?.best_symbols || []), ...(analytics.data?.tables?.worst_symbols || [])];
+    return new Map(rows.map((row) => [row.symbol, row]));
+  }, [analytics.data]);
+  const opportunities = buildTerminalOpportunities({
+    predictions: predictions.data,
+    signals: signals.data,
+    tickers: markets.data,
+    forecasts: forecasts.data
+  });
 
   return (
     <Shell>
-      <div className="mb-6 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+      <header className="mb-5 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
         <div>
-          <div className="text-xs font-semibold uppercase tracking-wide text-primary">AlphaForge Intelligence</div>
-          <h1 className="mt-1 text-[32px] font-semibold tracking-tight">Forecasts, regimes, and alpha rankings</h1>
+          <div className="text-xs font-semibold uppercase tracking-wide text-primary">Opportunities</div>
+          <h1 className="mt-1 text-[28px] font-semibold tracking-tight">Ranked trade intelligence</h1>
         </div>
-        <div className="text-sm text-muted">Ensemble intelligence layer</div>
-      </div>
+        <div className="text-sm text-muted">{opportunities.length} coins ranked by opportunity score</div>
+      </header>
 
       {loading && <LoadingGrid />}
       {error && <ErrorState message={error} />}
-      {!loading && !error && !data && <EmptyState label="No intelligence snapshot available" />}
-
-      {data && (
-        <div className="space-y-6">
-          <div className="grid gap-4 md:grid-cols-4">
-            <Metric label="Top Opportunity" value={top?.symbol || "-"} />
-            <Metric label="Alpha Score" value={top?.alpha_score ?? 0} />
-            <Metric label="Expected Return" value={`${signed(top?.expected_return)}%`} tone={(top?.expected_return || 0) >= 0 ? "text-buy" : "text-sell"} />
-            <Metric label="Risk Score" value={top?.risk_score ?? 0} />
-          </div>
-
-          <div className="grid gap-6 xl:grid-cols-[1.1fr_.9fr]">
-            <Panel className="p-4">
-              <SectionTitle eyebrow="Scanner" title="Top 5 Opportunities" />
-              {data.top_opportunities.length === 0 && <EmptyState label="No ranked opportunities" />}
-              <div className="space-y-3">
-                {data.top_opportunities.map((row) => <OpportunityRow key={row.symbol} row={row} />)}
-              </div>
-            </Panel>
-
-            <Panel className="p-4">
-              <SectionTitle eyebrow="Regime" title="Market Regime Overview" />
-              {data.market_regime_overview.length === 0 && <EmptyState label="No regime data" />}
-              <div className="grid gap-2 sm:grid-cols-2">
-                {data.market_regime_overview.slice(0, 10).map((row) => (
-                  <div key={row.symbol} className="rounded-lg border border-line bg-ink/40 p-3 text-sm">
-                    <div className="flex justify-between gap-3"><span className="font-semibold">{row.symbol}</span><span>{row.regime}</span></div>
-                    <div className="mt-1 text-xs text-muted">Confidence {row.confidence}%</div>
-                  </div>
-                ))}
-              </div>
-            </Panel>
-          </div>
-
-          <div className="grid gap-6 xl:grid-cols-3">
-            <Panel className="p-4">
-              <SectionTitle title="Highest Confidence Forecast" />
-              <ForecastBlock forecast={data.highest_confidence_forecast} />
-            </Panel>
-            <Panel className="p-4">
-              <SectionTitle title="Highest Expected Return" />
-              <ForecastBlock forecast={data.highest_expected_return} />
-            </Panel>
-            <Panel className="p-4">
-              <SectionTitle title="Model & Coin Quality" />
-              <StatusLine label="Most Accurate Model" value={data.most_accurate_model ? `${data.most_accurate_model.model} ${data.most_accurate_model.timeframe}` : "-"} />
-              <StatusLine label="Model Accuracy" value={`${data.most_accurate_model?.metrics?.accuracy ?? 0}%`} />
-              <StatusLine label="Best Coin" value={data.best_performing_coin?.symbol || "-"} />
-              <StatusLine label="Worst Coin" value={data.worst_performing_coin?.symbol || "-"} />
-            </Panel>
-          </div>
-
-          <Panel className="p-4">
-            <SectionTitle title="Live Alpha Rankings" />
-            {data.live_alpha_rankings.length === 0 && <EmptyState label="No alpha rankings" />}
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[760px] text-left text-sm">
-                <thead className="text-xs uppercase text-muted"><tr><th className="pb-3">Rank</th><th>Coin</th><th>Alpha</th><th>Return</th><th>Confidence</th><th>Risk</th><th>Regime</th></tr></thead>
-                <tbody>
-                  {data.live_alpha_rankings.map((row) => (
-                    <tr key={row.symbol} className="border-t border-line">
-                      <td className="py-3">#{row.rank}</td>
-                      <td className="font-semibold">{row.symbol}</td>
-                      <td>{row.alpha_score}</td>
-                      <td className={row.expected_return >= 0 ? "text-buy" : "text-sell"}>{signed(row.expected_return)}%</td>
-                      <td>{row.confidence}%</td>
-                      <td>{row.risk_score}</td>
-                      <td>{row.market_regime || "-"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Panel>
-        </div>
+      {!loading && !error && opportunities.length === 0 && (
+        <EmptyState label="No high-confidence opportunities currently exist. AlphaForge continues monitoring markets and will surface opportunities when sufficient evidence is detected." />
       )}
+
+      <div className="space-y-4">
+        {opportunities.map((opportunity, index) => (
+          <OpportunityCard key={opportunity.symbol} opportunity={opportunity} rank={index + 1} historicalAccuracy={accuracyBySymbol.get(opportunity.symbol)} />
+        ))}
+      </div>
     </Shell>
   );
 }
 
-function OpportunityRow({ row }: { row: Opportunity }) {
+function OpportunityCard({ opportunity, rank, historicalAccuracy }: { opportunity: OpportunityRow; rank: number; historicalAccuracy?: { accuracy: number; total: number } }) {
+  const [expanded, setExpanded] = useState(false);
+  const [timeframe, setTimeframe] = useState<CoreTimeframe>(opportunity.timeframe);
+  const selected = useMemo(() => selectedOpportunity(opportunity, timeframe), [opportunity, timeframe]);
+  const signal = selected.signal?.signal || (selected.expectedReturn >= 0 ? "BUY" : "SELL");
+
   return (
-    <div className="grid gap-3 rounded-lg border border-line bg-ink/40 p-3 text-sm md:grid-cols-[64px_1fr_repeat(4,92px)] md:items-center">
-      <div className="font-semibold text-primary">#{row.rank}</div>
-      <div className="font-semibold">{row.symbol}</div>
-      <div>{row.alpha_score}</div>
-      <div className={row.expected_return >= 0 ? "text-buy" : "text-sell"}>{signed(row.expected_return)}%</div>
-      <div>{row.confidence}%</div>
-      <div>{row.market_regime || "-"}</div>
+    <Panel className="overflow-hidden">
+      <div className="grid gap-0 xl:grid-cols-[220px_1fr]">
+        <div className="border-b border-line bg-ink/30 p-4 xl:border-b-0 xl:border-r">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-xs text-muted">Rank #{rank}</div>
+              <h2 className="mt-1 text-2xl font-semibold">{opportunity.symbol.replace("_", "/")}</h2>
+            </div>
+            <ActionPill signal={signal} />
+          </div>
+          <div className="mt-4 text-xs uppercase text-muted">Opportunity Score</div>
+          <div className="text-4xl font-semibold text-primary">{Math.round(selected.score)}</div>
+          <div className="mt-2 text-sm text-slate-300">{confidenceLabel(selected.confidence)} ({Math.round(selected.confidence)}%)</div>
+        </div>
+
+        <div className="p-4">
+          <div className="mb-4 flex flex-wrap gap-2">
+            {CORE_TIMEFRAMES.map((item) => {
+              const row = selectedOpportunity(opportunity, item);
+              const active = timeframe === item;
+              const best = opportunity.timeframe === item;
+              return (
+                <button
+                  key={item}
+                  onClick={() => setTimeframe(item)}
+                  className={`rounded-md border px-3 py-2 text-xs font-semibold transition ${active ? "border-primary bg-primary/15 text-primary" : "border-line bg-ink/40 text-muted hover:border-slate-600 hover:text-white"}`}
+                >
+                  {displayTimeframe(item)}
+                  {best && <span className="ml-2 rounded bg-buy/15 px-1.5 py-0.5 text-[10px] text-buy">BEST OPPORTUNITY</span>}
+                  <span className="ml-2 text-[10px] text-muted">{Math.round(row.score)}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-4 xl:grid-cols-8">
+            <Cell label="Current Price" value={formatInr(selected.currentPrice)} />
+            <Cell label="Expected Price" value={formatInr(selected.expectedPrice)} />
+            <Cell label="Expected Return" value={signed(selected.expectedReturn)} tone={selected.expectedReturn >= 0 ? "text-buy" : "text-sell"} />
+            <Cell label="Expected Date" value={formatDate(selected.expectedDate)} />
+            <Cell label="Confidence" value={`${Math.round(selected.confidence)}%`} />
+            <Cell label="Risk Level" value={selected.riskLevel} />
+            <Cell label="Historical Accuracy" value={historicalAccuracy ? `${historicalAccuracy.accuracy}% (${historicalAccuracy.total})` : `${selected.prediction?.validation_accuracy ?? 0}%`} />
+            <Cell label="Regime" value={selected.forecast?.market_regime || selected.ticker?.trend || "-"} />
+          </div>
+
+          <button onClick={() => setExpanded((value) => !value)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-md border border-line px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-white/5">
+            {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+            {expanded ? "Hide Detail" : "Expand Detail"}
+          </button>
+
+          {expanded && <ExpandedOpportunity opportunity={selected} />}
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function ExpandedOpportunity({ opportunity }: { opportunity: OpportunityRow }) {
+  const signal = opportunity.signal;
+  const prediction = opportunity.prediction;
+  const target1 = firstNumber(prediction?.take_profit_1, signal?.target, signal?.decision?.take_profit_1, opportunity.expectedPrice);
+  const target2 = firstNumber(prediction?.take_profit_2, signal?.decision?.take_profit_2);
+  const target3 = firstNumber(prediction?.take_profit_3, signal?.decision?.take_profit_3);
+  return (
+    <div className="mt-4 grid gap-4 border-t border-line pt-4 lg:grid-cols-2">
+      <Panel className="p-4">
+        <SectionTitle title="Execution" />
+        <StatusLine label="Entry" value={formatInr(firstNumber(signal?.entry, signal?.decision?.entry_price, opportunity.currentPrice))} />
+        <StatusLine label="Stop Loss" value={formatInr(firstNumber(prediction?.stop_loss, signal?.stop_loss, signal?.decision?.stop_loss))} />
+        <StatusLine label="Target 1" value={formatInr(target1)} />
+        <StatusLine label="Target 2" value={formatInr(target2)} />
+        <StatusLine label="Target 3" value={formatInr(target3)} />
+        <StatusLine label="Risk/Reward" value={prediction?.risk_reward_ratio || signal?.risk_reward || signal?.decision?.risk_reward_ratio || "-"} />
+      </Panel>
+      <Panel className="p-4">
+        <SectionTitle title="Peak & Holding" />
+        <StatusLine label="Expected Peak Price" value={formatInr(opportunity.expectedPrice)} />
+        <StatusLine label="Expected Peak Time" value={formatDate(opportunity.expectedDate)} />
+        <StatusLine label="Expected Holding Duration" value={signal?.expected_window || signal?.decision?.estimated_duration || displayTimeframe(opportunity.timeframe)} />
+        <StatusLine label="ML View" value={prediction?.direction || signal?.signal || "-"} />
+        <StatusLine label="Risk Factors" value={signal?.risk || opportunity.riskLevel} />
+      </Panel>
+      <Panel className="p-4 lg:col-span-2">
+        <SectionTitle title="Why This Opportunity Exists" />
+        <div className="grid gap-3 md:grid-cols-3">
+          <Reason label="Trend" value={opportunity.ticker?.trend || opportunity.forecast?.market_regime || "Trend evidence is limited"} />
+          <Reason label="Momentum" value={signed(opportunity.expectedReturn)} tone={opportunity.expectedReturn >= 0 ? "text-buy" : "text-sell"} />
+          <Reason label="Volume" value={opportunity.ticker?.volume_24h ? opportunity.ticker.volume_24h.toLocaleString("en-IN", { maximumFractionDigits: 0 }) : "Volume detail unavailable"} />
+          <Reason label="Market Structure" value={prediction?.expected_move || opportunity.forecast?.market_regime || "-"} />
+          <Reason label="ML View" value={prediction?.probabilities ? probabilityText(prediction.probabilities) : prediction?.direction || "-"} />
+          <Reason label="Risk Factors" value={signal?.explanation?.slice(0, 2).join(" ") || signal?.decision?.reason || opportunity.riskLevel} />
+        </div>
+      </Panel>
     </div>
   );
 }
 
-function ForecastBlock({ forecast }: { forecast?: Forecast | null }) {
-  if (!forecast) return <EmptyState label="No forecast" />;
+function selectedOpportunity(opportunity: OpportunityRow, timeframe: CoreTimeframe) {
+  const prediction = opportunity.predictions[timeframe] || opportunity.prediction;
+  return {
+    ...opportunity,
+    prediction,
+    timeframe,
+    expectedPrice: firstNumber(prediction?.predicted_price, opportunity.expectedPrice),
+    expectedReturn: firstNumber(prediction?.predicted_change_pct, opportunity.expectedReturn) || 0,
+    expectedDate: prediction?.target_timestamp || opportunity.expectedDate,
+    confidence: firstNumber(prediction?.confidence, opportunity.confidence) || 0,
+    score: firstNumber(prediction?.opportunity_score, opportunity.score) || opportunity.score
+  };
+}
+
+function Cell({ label, value, tone = "" }: { label: string; value: React.ReactNode; tone?: string }) {
   return (
-    <>
-      <StatusLine label="Coin" value={forecast.symbol} />
-      <StatusLine label="Current" value={formatInr(forecast.current_price)} />
-      <StatusLine label="48H Forecast" value={formatInr(forecast.forecast_48h)} />
-      <StatusLine label="Expected Return" value={`${signed(forecast.expected_return)}%`} />
-      <StatusLine label="Confidence" value={`${forecast.confidence}%`} />
-    </>
+    <div className="min-h-[78px] rounded-md border border-line bg-ink/40 p-3">
+      <div className="text-[11px] uppercase text-muted">{label}</div>
+      <div className={`mt-2 text-sm font-semibold leading-tight ${tone}`}>{value}</div>
+    </div>
   );
 }
 
-function signed(value?: number) {
-  const number = Number(value || 0);
-  return `${number > 0 ? "+" : ""}${number.toFixed(2)}`;
+function Reason({ label, value, tone = "" }: { label: string; value: React.ReactNode; tone?: string }) {
+  return (
+    <div className="rounded-md border border-line bg-ink/40 p-3">
+      <div className="text-xs uppercase text-muted">{label}</div>
+      <div className={`mt-2 text-sm text-slate-100 ${tone}`}>{value}</div>
+    </div>
+  );
+}
+
+function probabilityText(probabilities: Record<string, number>) {
+  return Object.entries(probabilities)
+    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .slice(0, 3)
+    .map(([key, value]) => `${key.toUpperCase()} ${Math.round(Number(value))}%`)
+    .join(" / ");
 }

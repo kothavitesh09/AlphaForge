@@ -1,119 +1,161 @@
 "use client";
 import { Shell } from "@/components/Shell";
-import { MetricCard } from "@/components/MetricCard";
 import { ErrorState, LoadingGrid } from "@/components/State";
+import { EmptyState, Panel, SectionTitle, StatusLine } from "@/components/trading-ui";
 import { useApi } from "@/hooks/useApi";
 import { API } from "@/services/api";
 
-type Analytics = {
-  metrics: Record<string, number>;
-  charts: {
-    accuracy_trend: { date: string; accuracy: number; total: number; correct: number }[];
-    signal_performance: { signal: string; total: number; wins: number; losses: number; average_return: number }[];
-    profit_curve: { timestamp: string; equity: number }[];
-    prediction_distribution: { direction: string; count: number }[];
-  };
-  tables: {
-    best_symbols: SymbolRow[];
-    worst_symbols: SymbolRow[];
-    recent_predictions: Record<string, string | number | boolean>[];
-    recent_results: Record<string, string | number | boolean>[];
-  };
-  backtests: Record<string, string | number>[];
+type Accuracy = {
+  source_type: string;
+  total_predictions: number;
+  correct_predictions: number;
+  incorrect_predictions: number;
+  accuracy_percent: number;
+  win_rate?: number;
+  mae: number;
+  mape: number;
+  rmse: number;
+  by_asset?: { symbol: string; total: number; correct: number; accuracy: number }[];
+  by_timeframe?: { timeframe: string; total: number; correct: number; accuracy: number }[];
+  over_time?: { date: string; total: number; correct: number; accuracy: number }[];
 };
 
-type SymbolRow = { symbol: string; total: number; accuracy: number; average_return: number };
+type Analytics = {
+  metrics: {
+    profit_factor?: number;
+    sharpe_ratio?: number;
+  };
+};
+
+type Performance = {
+  live_performance?: {
+    prediction_metrics?: { sample_size: number; accuracy: number; mae: number; mape: number; rmse: number };
+    trade_metrics?: { sample_size: number; win_rate: number; loss_rate: number; profit_factor: number; expectancy: number; sharpe_ratio: number; maximum_drawdown: number; recovery_factor: number };
+  } | null;
+  opportunity_score_validation: { bucket: string; sample_size: number; win_rate: number; profit_factor: number; expectancy?: number }[];
+  confidence_calibration: { bucket: string; sample_size: number; expected_confidence: number; actual_success_rate: number; calibration_error: number; confidence_reliability: number }[];
+  model_tournament: { model: string; timeframe: string; accuracy: number; mae: number; mape: number; rmse: number; profit_factor: number; sharpe: number; win_rate: number; is_best?: boolean; is_worst?: boolean }[];
+  allocation: { allocations?: { symbol: string; allocation_percent: number }[] }[];
+};
 
 export default function AnalyticsPage() {
-  const { data, loading, error } = useApi<Analytics>(API.analytics);
+  const accuracy = useApi<Accuracy>(API.accuracy);
+  const analytics = useApi<Analytics>(API.analytics);
+  const performance = useApi<Performance>(API.performance);
+  const loading = accuracy.loading || analytics.loading || performance.loading;
+  const error = accuracy.error || analytics.error || performance.error;
+  const data = accuracy.data;
+  const tradeMetrics = performance.data?.live_performance?.trade_metrics;
+
   return (
     <Shell>
-      <div className="mb-6 flex items-center justify-between gap-4">
-        <h1 className="text-2xl font-semibold">Analytics</h1>
-        <div className="text-sm text-zinc-400">Measured intelligence</div>
-      </div>
+      <header className="mb-5 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-primary">Accuracy Center</div>
+          <h1 className="mt-1 text-[28px] font-semibold tracking-tight">Live prediction trust metrics</h1>
+        </div>
+        <div className="text-sm text-muted">Sample size: {data?.total_predictions ?? 0}</div>
+      </header>
+
       {loading && <LoadingGrid />}
       {error && <ErrorState message={error} />}
+      {!loading && !error && !data && <EmptyState label="No live accuracy data is available yet. AlphaForge will report trust metrics after predictions resolve." />}
+
       {data && (
-        <div className="space-y-6">
-          <div className="grid gap-4 md:grid-cols-4">
-            <MetricCard label="Prediction Accuracy" value={`${data.metrics.prediction_accuracy ?? 0}%`} />
-            <MetricCard label="Win Rate" value={`${data.metrics.win_rate ?? 0}%`} />
-            <MetricCard label="Profit Factor" value={`${data.metrics.profit_factor ?? 0}`} />
-            <MetricCard label="Sharpe Ratio" value={`${data.metrics.sharpe_ratio ?? 0}`} />
+        <div className="space-y-5">
+          <Panel className="border-primary/30 p-4">
+            <div className="grid gap-4 md:grid-cols-4 xl:grid-cols-8">
+              <Stat label="Live Predictions" value={data.total_predictions} />
+              <Stat label="Live Accuracy" value={`${data.accuracy_percent}%`} />
+              <Stat label="Win Rate" value={`${tradeMetrics?.win_rate ?? data.win_rate ?? data.accuracy_percent}%`} />
+              <Stat label="MAE" value={data.mae.toFixed(4)} />
+              <Stat label="MAPE" value={`${data.mape.toFixed(4)}%`} />
+              <Stat label="RMSE" value={data.rmse.toFixed(4)} />
+              <Stat label="Profit Factor" value={tradeMetrics?.profit_factor ?? analytics.data?.metrics?.profit_factor ?? 0} />
+              <Stat label="Sharpe Ratio" value={tradeMetrics?.sharpe_ratio ?? analytics.data?.metrics?.sharpe_ratio ?? 0} />
+            </div>
+            <div className="mt-4 rounded-md border border-line bg-ink/40 p-3 text-sm text-muted">
+              Live sample size is shown prominently because small samples can be misleading. Bootstrap results are excluded from this page.
+            </div>
+          </Panel>
+
+          <div className="grid gap-5 xl:grid-cols-2">
+            <Breakdown title="Accuracy By Asset" rows={data.by_asset || []} keyName="symbol" />
+            <Breakdown title="Accuracy By Timeframe" rows={data.by_timeframe || []} keyName="timeframe" />
           </div>
-          <div className="grid gap-6 xl:grid-cols-2">
-            <ChartPanel title="Accuracy Trend" rows={data.charts.accuracy_trend.map((x) => ({ label: x.date, value: x.accuracy }))} suffix="%" />
-            <ChartPanel title="Prediction Distribution" rows={data.charts.prediction_distribution.map((x) => ({ label: x.direction, value: x.count }))} />
-            <ChartPanel title="Signal Performance" rows={data.charts.signal_performance.map((x) => ({ label: x.signal, value: x.average_return }))} suffix="%" />
-            <ChartPanel title="Profit Curve" rows={data.charts.profit_curve.slice(-20).map((x, i) => ({ label: String(i + 1), value: x.equity }))} suffix="%" />
+
+          <Panel className="p-4">
+            <SectionTitle title="Accuracy Over Time" />
+            {(data.over_time || []).length === 0 && <EmptyState label="No resolved live predictions over time yet." />}
+            <div className="space-y-3">
+              {(data.over_time || []).map((row) => (
+                <div key={row.date} className="grid grid-cols-[110px_1fr_96px] items-center gap-3 text-sm">
+                  <span className="text-muted">{row.date}</span>
+                  <div className="h-2 rounded bg-ink"><div className="h-full rounded bg-primary" style={{ width: `${Math.max(2, row.accuracy)}%` }} /></div>
+                  <span className="text-right">{row.accuracy}% ({row.total})</span>
+                </div>
+              ))}
+            </div>
+          </Panel>
+
+          <div className="grid gap-5 xl:grid-cols-2">
+            <Panel className="p-4">
+              <SectionTitle title="Opportunity Score Validation" />
+              {(performance.data?.opportunity_score_validation || []).slice(0, 5).map((row) => (
+                <StatusLine key={`${row.bucket}-${row.sample_size}`} label={row.bucket} value={`${row.win_rate}% win | PF ${row.profit_factor} | n=${row.sample_size}`} />
+              ))}
+              {(performance.data?.opportunity_score_validation || []).length === 0 && <EmptyState label="No completed live trades exist yet for opportunity score validation." />}
+            </Panel>
+            <Panel className="p-4">
+              <SectionTitle title="Confidence Calibration" />
+              {(performance.data?.confidence_calibration || []).slice(0, 5).map((row) => (
+                <StatusLine key={`${row.bucket}-${row.sample_size}`} label={row.bucket} value={`Expected ${row.expected_confidence}% | Actual ${row.actual_success_rate}% | Error ${row.calibration_error}%`} />
+              ))}
+              {(performance.data?.confidence_calibration || []).length === 0 && <EmptyState label="No live calibration data exists yet." />}
+            </Panel>
           </div>
-          <div className="grid gap-6 xl:grid-cols-2">
-            <SymbolTable title="Best Performing Symbols" rows={data.tables.best_symbols} />
-            <SymbolTable title="Worst Performing Symbols" rows={data.tables.worst_symbols} />
+
+          <div className="grid gap-5 xl:grid-cols-2">
+            <Panel className="p-4">
+              <SectionTitle title="Model Tournament" />
+              {(performance.data?.model_tournament || []).slice(0, 8).map((row) => (
+                <StatusLine key={`${row.model}-${row.timeframe}`} label={`${row.model} ${row.timeframe}${row.is_best ? " BEST" : row.is_worst ? " WORST" : ""}`} value={`${row.accuracy}% acc | PF ${row.profit_factor} | Sharpe ${row.sharpe}`} />
+              ))}
+              {(performance.data?.model_tournament || []).length === 0 && <EmptyState label="No model tournament measurements exist yet." />}
+            </Panel>
+            <Panel className="p-4">
+              <SectionTitle title="Allocation Recommendation" />
+              {(performance.data?.allocation?.[0]?.allocations || []).map((row) => (
+                <StatusLine key={row.symbol} label={row.symbol} value={`${row.allocation_percent}%`} />
+              ))}
+              {(performance.data?.allocation?.[0]?.allocations || []).length === 0 && <EmptyState label="No allocation recommendation exists yet." />}
+            </Panel>
           </div>
-          <div className="grid gap-6 xl:grid-cols-2">
-            <RecentTable title="Recent Predictions" rows={data.tables.recent_predictions} fields={["symbol", "timeframe", "direction", "confidence"]} />
-            <RecentTable title="Recent Results" rows={data.tables.recent_results} fields={["symbol", "timeframe", "predicted", "actual", "correct"]} />
-          </div>
-          <RecentTable title="Backtesting Dashboard" rows={data.backtests} fields={["symbol", "win_rate", "profit_factor", "max_drawdown", "sharpe_ratio", "average_return"]} />
         </div>
       )}
     </Shell>
   );
 }
 
-function ChartPanel({ title, rows, suffix = "" }: { title: string; rows: { label: string; value: number }[]; suffix?: string }) {
-  const max = Math.max(1, ...rows.map((row) => Math.abs(Number(row.value) || 0)));
+function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <section className="rounded-lg border border-line bg-panel p-4">
-      <h2 className="mb-4 text-lg font-semibold">{title}</h2>
-      <div className="space-y-3">
-        {rows.length === 0 && <div className="text-sm text-zinc-500">No data</div>}
-        {rows.slice(-12).map((row) => (
-          <div key={`${title}-${row.label}`} className="grid grid-cols-[90px_1fr_72px] items-center gap-3 text-sm">
-            <span className="truncate text-zinc-400">{row.label}</span>
-            <div className="h-2 overflow-hidden rounded bg-ink"><div className="h-full bg-buy" style={{ width: `${Math.max(2, Math.abs(row.value) / max * 100)}%` }} /></div>
-            <span className="text-right">{Number(row.value).toFixed(2)}{suffix}</span>
-          </div>
-        ))}
-      </div>
-    </section>
+    <div className="rounded-md border border-line bg-ink/40 p-3">
+      <div className="text-[11px] uppercase text-muted">{label}</div>
+      <div className="mt-2 text-xl font-semibold">{value}</div>
+    </div>
   );
 }
 
-function SymbolTable({ title, rows }: { title: string; rows: SymbolRow[] }) {
+function Breakdown({ title, rows, keyName }: { title: string; rows: Array<Record<string, string | number>>; keyName: string }) {
   return (
-    <section className="rounded-lg border border-line bg-panel p-4">
-      <h2 className="mb-4 text-lg font-semibold">{title}</h2>
-      <div className="space-y-3 text-sm">
-        {rows.length === 0 && <div className="text-zinc-500">No data</div>}
-        {rows.map((row) => (
-          <div key={`${title}-${row.symbol}`} className="grid grid-cols-4 gap-3 border-t border-line pt-3">
-            <span>{row.symbol}</span><span>{row.total}</span><span>{row.accuracy}%</span><span className={row.average_return >= 0 ? "text-buy" : "text-sell"}>{row.average_return}%</span>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function RecentTable({ title, rows, fields }: { title: string; rows: Record<string, string | number | boolean>[]; fields: string[] }) {
-  return (
-    <section className="rounded-lg border border-line bg-panel p-4">
-      <h2 className="mb-4 text-lg font-semibold">{title}</h2>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[560px] text-left text-sm">
-          <thead className="text-xs uppercase text-zinc-500"><tr>{fields.map((field) => <th key={field} className="pb-2 font-medium">{field.replace("_", " ")}</th>)}</tr></thead>
-          <tbody>
-            {rows.slice(0, 12).map((row, index) => (
-              <tr key={`${title}-${index}`} className="border-t border-line">
-                {fields.map((field) => <td key={field} className="py-2 pr-3">{String(row[field] ?? "")}</td>)}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </section>
+    <Panel className="p-4">
+      <SectionTitle title={title} />
+      {rows.length === 0 && <EmptyState label="No live breakdown is available yet." />}
+      {rows.map((row) => (
+        <div key={String(row[keyName])} className="border-t border-line py-2">
+          <StatusLine label={String(row[keyName])} value={`${row.accuracy}% (${row.correct}/${row.total})`} />
+        </div>
+      ))}
+    </Panel>
   );
 }

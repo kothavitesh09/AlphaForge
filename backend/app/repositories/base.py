@@ -10,8 +10,26 @@ def now_utc() -> datetime:
 def serialize(document: dict | None) -> dict | None:
     if not document:
         return None
+    if isinstance(document, list):
+        return [serialize(item) for item in document]
+    if not isinstance(document, dict):
+        if isinstance(document, ObjectId):
+            return str(document)
+        if isinstance(document, datetime):
+            return document.isoformat()
+        return document
     item = dict(document)
-    item["id"] = str(item.pop("_id"))
+    if "_id" in item:
+        item["id"] = str(item.pop("_id"))
+    for key, value in list(item.items()):
+        if isinstance(value, dict):
+            item[key] = serialize(value)
+        elif isinstance(value, list):
+            item[key] = [serialize(entry) for entry in value]
+        elif isinstance(value, ObjectId):
+            item[key] = str(value)
+        elif isinstance(value, datetime):
+            item[key] = value.isoformat()
     return item
 
 
